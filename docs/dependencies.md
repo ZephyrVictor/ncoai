@@ -1,24 +1,51 @@
 # Dependencies
 
-## Core local processes
+## Runtime chain
 
-1. vLLM: run as local process only (no container).
-2. LiteLLM: run from local source checkout.
-3. Open WebUI: run from local source checkout.
+1. `vLLM` serves the single underlying model `qwen35b`
+2. `LiteLLM` exposes OpenAI-compatible aliases:
+   - `qwen35b_no_think`
+   - `qwen35b_think`
+3. `Chainlit` provides the chat UI and thread persistence
+4. `PostgreSQL` stores Chainlit threads and LiteLLM usage data
+5. `nginx` is the intended public edge entrypoint for `/chat`
 
-## Edge services (preferred with container, fallback to local)
+## Required local tooling
 
-1. PostgreSQL
-2. Redis
-3. Prometheus
-4. Grafana
+1. Python `3.11`
+2. `uv`
+3. `tmux`
+4. Docker for optional edge services
+5. NVIDIA driver and CUDA runtime for `vLLM`
 
-## Package managers
+## Automatically managed tooling
 
-1. Python services: uv
-2. Open WebUI frontend/backend dependencies: follow upstream package manager in repository.
+1. Node `20.x` is installed locally under `.local/toolchain/`
+2. `pnpm 9` is enabled through `corepack`
+3. Chainlit backend runtime is installed into `.venv`
 
-## Fallback rule
+## Python packages required for MVP validation
 
-If Docker image/network is unstable, edge services can be installed and started locally.
-Core chat chain must still be Open WebUI -> LiteLLM -> vLLM.
+1. `chainlit`
+2. `openai`
+3. `requests`
+4. `playwright`
+
+The Chainlit startup script installs these when missing.
+
+## Browser runtime
+
+Playwright also needs the Chromium browser binary:
+
+```bash
+python -m playwright install chromium
+```
+
+## Optional edge services
+
+1. `nginx`
+2. `redis`
+3. `prometheus`
+4. `grafana`
+
+Only PostgreSQL is required for the chat MVP. Redis, Prometheus, and Grafana are not on the critical path for chat acceptance.

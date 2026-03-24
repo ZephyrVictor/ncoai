@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL_PATH="${MODEL_PATH:-$ROOT_DIR/models/Qwen3.5-35B-A3B}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen35b}"
-HOST="${VLLM_HOST:-${HOST:-127.0.0.1}}"
-PORT="${VLLM_PORT:-${PORT:-8000}}"
+HOST="${VLLM_HOST:-${HOST:-0.0.0.0}}"
+PORT="${VLLM_PORT:-${PORT:-12233}}"
 
 if [[ -z "${VLLM_PYTHON:-}" && -x "$ROOT_DIR/.venv/bin/python" ]]; then
   VLLM_PYTHON="$ROOT_DIR/.venv/bin/python"

@@ -88,29 +88,13 @@
 
 ### 3.1 分层架构
 
+当前仓库已先收敛为最小推理链路，Chat 界面与业务控制层后续再接入。
+
 ```text
-[竞赛选手/管理员]
-      |
-      | HTTPS / WSS
-      v
-[Nginx 入口网关]
-      |
-      v
-[Web 前端层]
-  - 选手 Chat 界面
-  - 管理员控制台
-      |
-      v
-[应用与管控层]
-  - Chat API 服务
-  - Token/配额服务
-  - 队列调度服务
-  - 状态管理服务
-      |
-      +--------------------------+
-      |                          |
-      v                          v
-[LiteLLM Gateway]          [PostgreSQL + Redis]
+[待接入的 Chat 界面 / 业务层]
+              |
+              v
+[LiteLLM Gateway]
       |
       v
 [vLLM 推理引擎 (qwen35b)]
@@ -127,21 +111,19 @@
 
 ### 3.2 网络隔离
 
-1. 外部流量仅允许进入 Nginx。
-2. LiteLLM、vLLM、数据库位于内部网络，禁止公网直接访问。
-3. 管理界面仅允许管理员访问。
+1. 当前阶段先在本机完成 LiteLLM 与 vLLM 对齐。
+2. Chat 界面接入前，不引入额外入口代理。
+3. 后续如接入数据库与管理界面，再补充内部网络隔离策略。
 
 ### 3.3 组件职责
 
-1. Nginx：TLS 终止、反向代理、SSE 长连接保活。
-2. Web 前端：提供选手与管理员可视化能力。
-3. 应用与管控层：业务核心（配额、队列、状态、记录）。
-4. LiteLLM：统一 OpenAI 兼容网关和模型调用适配。
-5. vLLM：高吞吐推理执行。
-6. PostgreSQL：业务主数据（用户、会话、消息、账本）。
-7. Redis：实时计数与队列状态缓存。
-8. Prometheus/Grafana：指标采集与可视化。
-9. Alertmanager：告警路由与通知。
+1. LiteLLM：统一 OpenAI 兼容网关和模型调用适配。
+2. vLLM：高吞吐推理执行。
+3. Chat 界面：后续直接接入 LiteLLM，再决定是否补业务层。
+4. PostgreSQL：业务主数据（后续需要时接入）。
+5. Redis：实时计数与队列状态缓存（后续需要时接入）。
+6. Prometheus/Grafana：指标采集与可视化（可选）。
+7. Alertmanager：告警路由与通知（后续需要时接入）。
 
 ---
 
@@ -150,13 +132,10 @@
 ### 4.1 聊天请求主流程
 
 1. 选手在 Chat 界面发送消息。
-2. 前端调用 Chat API（选手无需感知 key）。
-3. 服务端识别用户身份并执行配额预检。
-4. 通过后进入请求队列。
-5. 调度器根据当前资源占用决定出队节奏。
-6. 出队请求经 LiteLLM 转发到 vLLM。
-7. 流式返回响应给前端。
-8. 请求结束后写入 token 账本、会话状态和消息记录。
+2. 当前阶段由调用方直接请求 LiteLLM。
+3. LiteLLM 将请求转发给 vLLM。
+4. vLLM 流式或非流式返回结果。
+5. Chat 界面、配额、状态与记录能力后续再补齐。
 
 ### 4.2 用户状态机
 
@@ -444,7 +423,7 @@ loop every 200ms:
 
 能力：
 
-1. 基础体验与 Open WebUI 一致。
+1. 基础体验保持简洁稳定。
 2. 定制化视觉样式（参考 chatjimmy.ai 设计语言）。
 3. 显示本次请求 token。
 4. 显示当前会话累计 token。
@@ -488,7 +467,7 @@ loop every 200ms:
 
 1. 推理：vLLM。
 2. 网关：LiteLLM Gateway。
-3. UI：Open WebUI 二开（或前端自研）。
+3. UI：前端自研。
 4. 数据库：PostgreSQL。
 5. 缓存与实时状态：Redis。
 6. 监控：Prometheus + Grafana + Alertmanager。
@@ -608,24 +587,24 @@ loop every 200ms:
 为提升研发效率并避免容器网络问题阻塞开发，当前阶段采用“本地优先、容器兜底”的实施模式：
 
 1. vLLM 固定本机进程运行，不进入 Docker。
-2. LiteLLM 与 Open WebUI 以本地源码方式接入，便于二次开发。
+2. LiteLLM 以本地源码方式接入，便于二次开发。
 3. PostgreSQL、Redis、Prometheus、Grafana 作为边缘组件，容器化为可选方案而非前置条件。
 4. 若 Docker 镜像拉取或容器网络出现问题，允许直接切换到本机安装运行边缘组件。
 
 ### 18.1 本地主链路
 
 ```text
-Open WebUI (local source)
-   -> LiteLLM (local source)
+LiteLLM (local source)
    -> vLLM (local process)
 ```
 
 ### 18.2 当前仓库组织
 
 1. `middleware/litellm/`：LiteLLM 上游源码。
-2. `middleware/open-webui/`：Open WebUI 上游源码。
+2. OpenWebUI 已移除，不再作为运行时依赖。
 3. `scripts/vllm/start-qwen35b.sh`：vLLM 本机启动脚本。
 4. `infra/litellm/config.yaml`：LiteLLM 到本地 vLLM 的模型映射配置。
-5. `infra/compose/dev-services.yml`：边缘组件容器辅助编排（可选）。
-6. `docs/dev-setup.md` 与 `docs/runbook/dev-runbook.md`：开发与排障操作手册。
-
+5. `scripts/litellm/start-local.sh`：LiteLLM 本机启动脚本。
+6. `scripts/e2e_dev_acceptance.py`：当前最小链路自检脚本。
+7. `infra/compose/dev-services.yml`：边缘组件容器辅助编排（可选）。
+8. `docs/dev-setup.md` 与 `docs/runbook/dev-runbook.md`：开发与排障操作手册。

@@ -13,7 +13,7 @@ SESSION = "ncoai-dev"
 SERVICES = {
     "vllm": "bash scripts/vllm/start-qwen35b.sh",
     "litellm": "bash scripts/litellm/start-local.sh",
-    "webui": "bash scripts/openwebui/start-local.sh",
+    "chainlit": "bash scripts/chainlit/start-local.sh",
 }
 
 
@@ -36,6 +36,13 @@ def session_exists() -> bool:
         capture_output=True,
     )
     return proc.returncode == 0
+
+
+def list_window_names() -> set[str]:
+    proc = run(["tmux", "list-windows", "-t", SESSION, "-F", "#{window_name}"], check=False)
+    if proc.returncode != 0:
+        return set()
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
 def tmux_cmd(service: str) -> str:
@@ -66,7 +73,19 @@ def start() -> int:
         return 1
 
     if session_exists():
-        print(f"[INFO] tmux session already exists: {SESSION}")
+        existing = list_window_names()
+        missing = [name for name in SERVICES if name not in existing]
+
+        if not missing:
+            print(f"[INFO] tmux session already exists: {SESSION}")
+            print(f"Attach with: tmux attach -t {SESSION}")
+            return 0
+
+        for name in missing:
+            run(["tmux", "new-window", "-t", SESSION, "-n", name])
+            run(["tmux", "send-keys", "-t", f"{SESSION}:{name}", build_launch_command(name), "C-m"])
+
+        print(f"[OK] Added missing services to existing session: {', '.join(missing)}")
         print(f"Attach with: tmux attach -t {SESSION}")
         return 0
 

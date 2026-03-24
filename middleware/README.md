@@ -1,8 +1,13 @@
 # Middleware Source Repositories
 
-This folder hosts local source checkouts for components that need customization:
+This folder hosts middleware source trees that are patched locally for the MVP runtime.
 
-1. litellm
-2. open-webui
+## Current contents
 
-These repos are expected to be checked out locally for development and patching.
+1. `litellm`
+
+LiteLLM is used as the single OpenAI-compatible gateway between Chainlit and vLLM. It is responsible for:
+
+1. exposing `qwen35b_no_think`
+2. optionally exposing `qwen35b_think`
+3. writing token and usage data to PostgreSQL

@@ -1,13 +1,8 @@
 model_list:
-  - model_name: qwen35b
-    litellm_params:
-      model: openai/qwen35b
-      api_base: http://127.0.0.1:8000/v1
-      api_key: dummy
   - model_name: qwen35b_no_think
     litellm_params:
       model: openai/qwen35b
-      api_base: http://127.0.0.1:8000/v1
+      api_base: http://127.0.0.1:12233/v1
       api_key: dummy
       extra_body:
         chat_template_kwargs:
@@ -15,13 +10,15 @@ model_list:
   - model_name: qwen35b_think
     litellm_params:
       model: openai/qwen35b
-      api_base: http://127.0.0.1:8000/v1
+      api_base: http://127.0.0.1:12233/v1
       api_key: dummy
       extra_body:
         chat_template_kwargs:
           enable_thinking: true
 
 litellm_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
   set_verbose: true
   drop_params: true
   telemetry: false
