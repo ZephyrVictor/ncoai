@@ -1,0 +1,15 @@
+# Required images
+postgres:16 | required | primary relational database | no host-network requirement
+redis:7 | required | quota cache and hot-path storage | no host-network requirement
+nginx:alpine | required | reverse proxy for /chat and /admin | needs host.docker.internal access
+prom/prometheus:latest | required | metrics scraping and target health view | needs host.docker.internal access
+grafana/grafana:latest | required | metrics dashboards | no host-network requirement
+
+# Recommended observability images
+prom/node-exporter:latest | recommended | host CPU / memory / filesystem metrics | needs host mounts
+prometheuscommunity/postgres-exporter:latest | recommended | PostgreSQL metrics | internal docker network only
+oliver006/redis_exporter:latest | recommended | Redis metrics | internal docker network only
+prom/blackbox-exporter:latest | recommended | HTTP health probes for host services | needs host.docker.internal access
+
+# Optional image
+pgbouncer/pgbouncer:latest | optional | PostgreSQL connection pooling | internal docker network only

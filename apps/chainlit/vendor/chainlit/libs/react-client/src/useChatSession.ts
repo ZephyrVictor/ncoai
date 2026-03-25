@@ -1,5 +1,5 @@
 import { debounce } from 'lodash';
-import { useCallback, useContext, useEffect } from 'react';
+import { useCallback, useContext, useEffect, useRef } from 'react';
 import {
   useRecoilState,
   useRecoilValue,
@@ -101,6 +101,42 @@ const quotaSummaryFromTokenUsage = (
   };
 };
 
+const mergeQuotaSummary = (
+  preferred?: IQuotaSummary,
+  fallback?: IQuotaSummary
+): IQuotaSummary | undefined => {
+  if (!preferred) {
+    return fallback;
+  }
+  if (!fallback) {
+    return preferred;
+  }
+
+  const preferredVersion = preferred.policy_version || 0;
+  const fallbackVersion = fallback.policy_version || 0;
+  if (preferredVersion !== fallbackVersion) {
+    return preferredVersion >= fallbackVersion ? preferred : fallback;
+  }
+
+  const preferredTime = preferred.updated_at
+    ? Date.parse(preferred.updated_at)
+    : 0;
+  const fallbackTime = fallback.updated_at ? Date.parse(fallback.updated_at) : 0;
+
+  if (preferredTime !== fallbackTime) {
+    return preferredTime >= fallbackTime ? preferred : fallback;
+  }
+
+  if (preferred.status === 'blocked' && fallback.status !== 'blocked') {
+    return preferred;
+  }
+  if (fallback.status === 'blocked' && preferred.status !== 'blocked') {
+    return fallback;
+  }
+
+  return preferred;
+};
+
 const applyQuotaFromStep = (
   step: IStep,
   setThreadQuota: (value: IQuotaSummary | undefined) => void,
@@ -116,6 +152,22 @@ const applyQuotaFromStep = (
   if (userQuota) {
     setUserQuota(userQuota);
   }
+};
+
+const hasStreamingStep = (steps: IStep[] = []) =>
+  steps.some((step) => step.streaming || hasStreamingStep(step.steps || []));
+
+const applyQuotaFromSteps = (
+  steps: IStep[],
+  setThreadQuota: (value: IQuotaSummary | undefined) => void,
+  setUserQuota: (value: IQuotaSummary | undefined) => void
+) => {
+  steps.forEach((step) => {
+    applyQuotaFromStep(step, setThreadQuota, setUserQuota);
+    if (step.steps?.length) {
+      applyQuotaFromSteps(step.steps, setThreadQuota, setUserQuota);
+    }
+  });
 };
 
 const useChatSession = () => {
@@ -152,6 +204,7 @@ const useChatSession = () => {
 
   const [currentThreadId, setCurrentThreadId] =
     useRecoilState(currentThreadIdState);
+  const streamingResumeRefreshId = useRef(0);
 
   // Use currentThreadId as thread id in websocket header
   useEffect(() => {
@@ -320,16 +373,18 @@ const useChatSession = () => {
         wavStreamPlayer.interrupt();
       });
 
-      socket.on('resume_thread', (thread: IThread) => {
+      const hydrateThread = (thread: IThread) => {
         const isReadOnlyView = Boolean(
           (thread as any)?.metadata?.viewer_read_only
         );
         if (!isReadOnlyView && idToResume && thread.id !== idToResume) {
           window.location.href = `/thread/${thread.id}`;
+          return;
         }
         if (!isReadOnlyView && idToResume) {
           setCurrentThreadId(thread.id);
         }
+
         let messages: IStep[] = [];
         for (const step of thread.steps) {
           messages = addMessage(messages, step);
@@ -343,10 +398,10 @@ const useChatSession = () => {
         const threadTokenSummary = thread.metadata?.token_usage_summary as
           | IQuotaSummary
           | undefined;
+        setThreadQuota(undefined);
+        applyQuotaFromSteps(thread.steps || [], setThreadQuota, setUserQuota);
         if (threadTokenSummary) {
-          setThreadQuota(threadTokenSummary);
-        } else {
-          setThreadQuota(undefined);
+          setThreadQuota((prev) => mergeQuotaSummary(threadTokenSummary, prev));
         }
         setMessages(messages);
         const elements = thread.elements || [];
@@ -358,6 +413,60 @@ const useChatSession = () => {
             (e) => ['avatar', 'tasklist'].indexOf(e.type) === -1
           )
         );
+      };
+
+      const refreshStreamingThread = async (
+        threadId: string,
+        refreshId: number,
+        remainingAttempts = 60
+      ) => {
+        if (
+          remainingAttempts <= 0 ||
+          streamingResumeRefreshId.current !== refreshId
+        ) {
+          return;
+        }
+
+        try {
+          const response = await client.get(`/project/thread/${threadId}`);
+          const thread = (await response.json()) as IThread;
+          if (streamingResumeRefreshId.current !== refreshId) {
+            return;
+          }
+
+          hydrateThread(thread);
+          if (hasStreamingStep(thread.steps || [])) {
+            window.setTimeout(() => {
+              void refreshStreamingThread(
+                threadId,
+                refreshId,
+                remainingAttempts - 1
+              );
+            }, 1500);
+          }
+        } catch {
+          if (streamingResumeRefreshId.current !== refreshId) {
+            return;
+          }
+          window.setTimeout(() => {
+            void refreshStreamingThread(
+              threadId,
+              refreshId,
+              remainingAttempts - 1
+            );
+          }, 2000);
+        }
+      };
+
+      socket.on('resume_thread', (thread: IThread) => {
+        streamingResumeRefreshId.current += 1;
+        const refreshId = streamingResumeRefreshId.current;
+        hydrateThread(thread);
+        if (hasStreamingStep(thread.steps || [])) {
+          window.setTimeout(() => {
+            void refreshStreamingThread(thread.id, refreshId);
+          }, 1500);
+        }
       });
 
       socket.on('resume_thread_error', (error?: string) => {

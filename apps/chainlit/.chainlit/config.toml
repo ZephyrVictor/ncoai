@@ -42,12 +42,15 @@ enabled = false
 allowed_executables = []
 
 [UI]
-name = "NCOAI Chat"
+name = "NCO LLM CHAT"
 layout = "wide"
 default_sidebar_state = "open"
 confirm_new_chat = false
 cot = "hidden"
 alert_style = "classic"
+logo_file_url = "/chat/public/nco.png?v=20260324"
+custom_meta_url = "/chat"
+custom_meta_image_url = "/chat/public/nco.png?v=20260324"
 
 [meta]
 generated_by = "2.10.0"

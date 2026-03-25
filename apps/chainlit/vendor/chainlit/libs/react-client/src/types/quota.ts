@@ -3,9 +3,12 @@ export interface IQuotaSummary {
   reserved_tokens?: number;
   limit_tokens: number;
   remaining_tokens: number;
+  policy_version?: number;
   updated_at?: string;
   window_start?: string | null;
   window_end?: string | null;
+  status?: 'ok' | 'blocked' | 'window_closed' | 'missing_policy';
+  message?: string | null;
 }
 
 export interface ITokenUsageMetadata {

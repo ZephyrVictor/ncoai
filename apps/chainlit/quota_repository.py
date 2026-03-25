@@ -16,7 +16,8 @@ LIST_THREAD_SUMMARIES_SQL = text(
 
 LIST_USER_SUMMARIES_SQL = text(
     """
-    SELECT user_identifier, used_tokens, reserved_tokens, limit_tokens, updated_at
+    SELECT user_identifier, used_tokens, reserved_tokens, limit_tokens,
+           policy_version, updated_at, window_start, window_end
     FROM quota_user_summary
     """
 )
@@ -65,9 +66,21 @@ SELECT_THREAD_SUMMARY_SQL = text(
 
 SELECT_USER_SUMMARY_SQL = text(
     """
-    SELECT used_tokens, reserved_tokens, limit_tokens, updated_at, window_start, window_end
+    SELECT used_tokens, reserved_tokens, limit_tokens, policy_version,
+           updated_at, window_start, window_end
     FROM quota_user_summary
     WHERE user_identifier = :user_identifier
+    """
+)
+
+SUM_USER_WINDOW_USAGE_SQL = text(
+    """
+    SELECT COALESCE(SUM(total_tokens), 0)::INT AS used_tokens
+    FROM quota_usage_ledger
+    WHERE user_identifier = :user_identifier
+      AND status = 'settled'
+      AND (CAST(:window_start AS TIMESTAMPTZ) IS NULL OR settled_at >= CAST(:window_start AS TIMESTAMPTZ))
+      AND (CAST(:window_end AS TIMESTAMPTZ) IS NULL OR settled_at <= CAST(:window_end AS TIMESTAMPTZ))
     """
 )
 
@@ -132,6 +145,7 @@ UPSERT_USER_SUMMARY_RESERVATION_SQL = text(
         used_tokens,
         reserved_tokens,
         limit_tokens,
+        policy_version,
         window_start,
         window_end,
         updated_at
@@ -140,6 +154,7 @@ UPSERT_USER_SUMMARY_RESERVATION_SQL = text(
         0,
         :reserved_tokens,
         :limit_tokens,
+        :policy_version,
         :window_start,
         :window_end,
         :updated_at
@@ -147,6 +162,39 @@ UPSERT_USER_SUMMARY_RESERVATION_SQL = text(
     ON CONFLICT (user_identifier) DO UPDATE
     SET reserved_tokens = quota_user_summary.reserved_tokens + EXCLUDED.reserved_tokens,
         limit_tokens = EXCLUDED.limit_tokens,
+        policy_version = EXCLUDED.policy_version,
+        window_start = EXCLUDED.window_start,
+        window_end = EXCLUDED.window_end,
+        updated_at = EXCLUDED.updated_at
+    """
+)
+
+UPSERT_USER_SUMMARY_SQL = text(
+    """
+    INSERT INTO quota_user_summary (
+        user_identifier,
+        used_tokens,
+        reserved_tokens,
+        limit_tokens,
+        policy_version,
+        window_start,
+        window_end,
+        updated_at
+    ) VALUES (
+        :user_identifier,
+        :used_tokens,
+        :reserved_tokens,
+        :limit_tokens,
+        :policy_version,
+        :window_start,
+        :window_end,
+        :updated_at
+    )
+    ON CONFLICT (user_identifier) DO UPDATE
+    SET used_tokens = EXCLUDED.used_tokens,
+        reserved_tokens = EXCLUDED.reserved_tokens,
+        limit_tokens = EXCLUDED.limit_tokens,
+        policy_version = EXCLUDED.policy_version,
         window_start = EXCLUDED.window_start,
         window_end = EXCLUDED.window_end,
         updated_at = EXCLUDED.updated_at
@@ -267,6 +315,53 @@ class QuotaRepository:
                 )
             ).mappings().first()
 
+    async def sum_user_window_usage(
+        self,
+        user_identifier: str,
+        *,
+        window_start: datetime | None,
+        window_end: datetime | None,
+    ) -> int:
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    SUM_USER_WINDOW_USAGE_SQL,
+                    {
+                        "user_identifier": user_identifier,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                    },
+                )
+            ).mappings().first()
+        return int((row or {}).get("used_tokens") or 0)
+
+    async def upsert_user_summary(
+        self,
+        *,
+        user_identifier: str,
+        used_tokens: int,
+        reserved_tokens: int,
+        limit_tokens: int,
+        policy_version: int,
+        window_start: datetime | None,
+        window_end: datetime | None,
+        updated_at: datetime,
+    ) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                UPSERT_USER_SUMMARY_SQL,
+                {
+                    "user_identifier": user_identifier,
+                    "used_tokens": used_tokens,
+                    "reserved_tokens": reserved_tokens,
+                    "limit_tokens": limit_tokens,
+                    "policy_version": policy_version,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    "updated_at": updated_at,
+                },
+            )
+
     async def create_reservation(
         self,
         request_id: str,
@@ -277,6 +372,7 @@ class QuotaRepository:
         prompt_tokens: int,
         thread_limit_tokens: int,
         user_limit_tokens: int,
+        user_policy_version: int,
         window_start: str | None,
         window_end: str | None,
         created_at: datetime,
@@ -309,6 +405,7 @@ class QuotaRepository:
                     "user_identifier": user_identifier,
                     "reserved_tokens": reserved_tokens,
                     "limit_tokens": user_limit_tokens,
+                    "policy_version": user_policy_version,
                     "window_start": window_start,
                     "window_end": window_end,
                     "updated_at": created_at,

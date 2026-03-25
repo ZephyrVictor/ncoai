@@ -17,6 +17,23 @@ interface Props {
   contentRef?: React.RefObject<HTMLDivElement>;
 }
 
+const fallbackCopyText = async (text: string) => {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error('clipboard unavailable');
+  }
+};
+
 const CopyButton = ({ content, className, contentRef }: Props) => {
   const [copied, setCopied] = useState(false);
   const { t } = useTranslation();
@@ -27,43 +44,46 @@ const CopyButton = ({ content, className, contentRef }: Props) => {
         typeof content === 'object'
           ? JSON.stringify(content, null, 2)
           : String(content);
+      const clipboardApi = navigator.clipboard;
+      const ClipboardItemCtor =
+        typeof window !== 'undefined'
+          ? (
+              window as Window &
+                typeof globalThis & {
+                  ClipboardItem?: typeof ClipboardItem;
+                }
+            ).ClipboardItem
+          : undefined;
 
-      // Create clipboard items array
-      const clipboardItems: ClipboardItem[] = [];
+      let copiedSuccessfully = false;
 
-      // Always add text version
-      clipboardItems.push(
-        new ClipboardItem({
-          'text/plain': new Blob([textToCopy], { type: 'text/plain' })
-        })
-      );
-
-      // If contentRef is provided, also add HTML version
-      if (contentRef?.current) {
-        const htmlContent = contentRef.current.innerHTML;
-        clipboardItems.push(
-          new ClipboardItem({
-            'text/html': new Blob([htmlContent], { type: 'text/html' })
-          })
-        );
-      }
-
-      // Try to write multiple formats to clipboard
-      if (navigator.clipboard.write && clipboardItems.length > 1) {
-        // Use the newer clipboard API that supports multiple formats
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            'text/plain': new Blob([textToCopy], { type: 'text/plain' }),
-            ...(contentRef?.current && {
+      if (clipboardApi?.write && ClipboardItemCtor && contentRef?.current) {
+        try {
+          await clipboardApi.write([
+            new ClipboardItemCtor({
+              'text/plain': new Blob([textToCopy], { type: 'text/plain' }),
               'text/html': new Blob([contentRef.current.innerHTML], {
                 type: 'text/html'
               })
             })
-          })
-        ]);
-      } else {
-        // Fallback to text-only for older browsers
-        await navigator.clipboard.writeText(textToCopy);
+          ]);
+          copiedSuccessfully = true;
+        } catch {
+          copiedSuccessfully = false;
+        }
+      }
+
+      if (!copiedSuccessfully && clipboardApi?.writeText) {
+        try {
+          await clipboardApi.writeText(textToCopy);
+          copiedSuccessfully = true;
+        } catch {
+          copiedSuccessfully = false;
+        }
+      }
+
+      if (!copiedSuccessfully) {
+        await fallbackCopyText(textToCopy);
       }
 
       setCopied(true);

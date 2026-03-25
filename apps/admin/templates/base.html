@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="{{ root_path }}/static/admin.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <a href="{{ root_path }}/users">NCO LLM CHAT</a>
+      </div>
+      {% if admin_username %}
+      <nav class="nav">
+        <a href="{{ root_path }}/users">用户</a>
+        <a href="{{ root_path }}/quota-policies">配额策略</a>
+        <button id="logout-button" type="button" class="linklike">退出</button>
+      </nav>
+      {% endif %}
+    </header>
+    <main class="container">
+      <div id="flash-banner" class="flash hidden" data-testid="flash-banner"></div>
+      {% block content %}{% endblock %}
+    </main>
+    <script>
+      window.ADMIN_ROOT_PATH = {{ root_path | tojson }};
+      const flashBanner = document.getElementById('flash-banner');
+
+      function renderFlash(message, kind = 'success') {
+        if (!flashBanner) return;
+        flashBanner.textContent = message;
+        flashBanner.className = `flash ${kind}`;
+      }
+
+      const pendingFlash = window.sessionStorage.getItem('adminFlash');
+      if (pendingFlash) {
+        renderFlash(pendingFlash, 'success');
+        window.sessionStorage.removeItem('adminFlash');
+      }
+
+      const logoutButton = document.getElementById('logout-button');
+      if (logoutButton) {
+        logoutButton.addEventListener('click', async () => {
+          await fetch(`${window.ADMIN_ROOT_PATH}/api/auth/logout`, {
+            method: 'POST',
+            credentials: 'same-origin'
+          });
+          window.location.href = `${window.ADMIN_ROOT_PATH}/login`;
+        });
+      }
+    </script>
+    {% block scripts %}{% endblock %}
+  </body>
+  </html>

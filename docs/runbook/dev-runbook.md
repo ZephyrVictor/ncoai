@@ -126,4 +126,5 @@ Action:
 
 1. inspect `python3 devctl.py logs chainlit`
 2. confirm `DATABASE_URL` points to `ncoai_chat`
-3. confirm the `threads` and `steps` tables exist in PostgreSQL
+3. confirm `LITELLM_DATABASE_URL` points to a separate database, for example `ncoai_litellm`
+4. confirm the `threads` and `steps` tables exist in PostgreSQL

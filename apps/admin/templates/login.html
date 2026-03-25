@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel narrow">
+  <h1>管理员登录</h1>
+  <p class="muted">控制面板只允许独立管理员账号登录。</p>
+  <form id="admin-login-form" data-testid="admin-login-form" class="stack">
+    <label>
+      用户名
+      <input id="login-username" name="username" type="text" required autocomplete="username" />
+    </label>
+    <label>
+      密码
+      <input id="login-password" name="password" type="password" required autocomplete="current-password" />
+    </label>
+    <button id="login-submit" type="submit">登录</button>
+  </form>
+  <div id="login-status" class="inline-status" data-testid="login-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const form = document.getElementById('admin-login-form');
+  const submit = document.getElementById('login-submit');
+  const status = document.getElementById('login-status');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    submit.textContent = '登录中...';
+    status.textContent = '';
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          username: document.getElementById('login-username').value,
+          password: document.getElementById('login-password').value
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || '登录失败');
+      }
+      window.sessionStorage.setItem('adminFlash', '登录成功');
+      window.location.href = `${window.ADMIN_ROOT_PATH}/users`;
+    } catch (error) {
+      status.textContent = error.message || '登录失败';
+      status.className = 'inline-status error';
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '登录';
+    }
+  });
+</script>
+{% endblock %}

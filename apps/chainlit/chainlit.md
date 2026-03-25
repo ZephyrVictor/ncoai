@@ -1,3 +1,3 @@
-# NCOAI Chat
+# NCO LLM CHAT
 
-Minimal chat delivery for `Chainlit + LiteLLM + vLLM`.
+Minimal chat delivery for `NCO LLM CHAT + LiteLLM + vLLM`.

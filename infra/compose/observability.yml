@@ -1,0 +1,89 @@
+services:
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    container_name: ncoai-prometheus
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      CHAINLIT_PORT: ${CHAINLIT_PORT:-3100}
+      CHAINLIT_ROOT_PATH: ${CHAINLIT_ROOT_PATH:-/chat}
+      ADMIN_APP_PORT: ${ADMIN_APP_PORT:-3200}
+      ADMIN_APP_ROOT_PATH: ${ADMIN_APP_ROOT_PATH:-/admin}
+      LITELLM_PORT: ${LITELLM_PORT:-33455}
+      VLLM_PORT: ${VLLM_PORT:-12233}
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ../prometheus/prometheus.yml.template:/etc/prometheus/templates/prometheus.yml.template:ro
+      - ../prometheus/blackbox.yml:/etc/prometheus/blackbox.yml:ro
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        envsubst '$$CHAINLIT_PORT $$CHAINLIT_ROOT_PATH $$ADMIN_APP_PORT $$ADMIN_APP_ROOT_PATH $$LITELLM_PORT $$VLLM_PORT' \
+          < /etc/prometheus/templates/prometheus.yml.template \
+          > /etc/prometheus/prometheus.yml
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9090/-/healthy >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:latest}
+    container_name: ncoai-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:-prom/node-exporter:latest}
+    container_name: ncoai-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE:-prometheuscommunity/postgres-exporter:latest}
+    container_name: ncoai-postgres-exporter
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-ncoai}:${POSTGRES_PASSWORD:-ncoai_dev}@postgres:5432/${POSTGRES_DB:-ncoai_chat}?sslmode=disable
+
+  redis-exporter:
+    image: ${REDIS_EXPORTER_IMAGE:-oliver006/redis_exporter:latest}
+    container_name: ncoai-redis-exporter
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_ADDR: redis://redis:6379
+
+  blackbox-exporter:
+    image: ${BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:latest}
+    container_name: ncoai-blackbox-exporter
+    restart: unless-stopped
+    volumes:
+      - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro

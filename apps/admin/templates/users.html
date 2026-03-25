@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h1>{{ '编辑用户' if edit_user else '创建用户' }}</h1>
+      <a class="ghost" href="{{ root_path }}/users">重置</a>
+    </div>
+    <p class="muted">Session token 上限为只读参考值，来自当前模型运行时配置。</p>
+    <div class="readonly-badge" data-testid="session-limit-readonly">当前 session max_tokens: {{ model_max_tokens | format_number }}</div>
+    <form id="user-form" data-testid="user-form" class="stack">
+      <input id="editing-identifier" type="hidden" value="{{ edit_user.identifier if edit_user else '' }}" />
+      <label>
+        用户标识
+        <input id="user-identifier" type="text" value="{{ edit_user.identifier if edit_user else '' }}" {% if edit_user %}readonly{% endif %} required />
+      </label>
+      <label>
+        显示名称
+        <input id="user-display-name" type="text" value="{{ edit_user.display_name if edit_user else '' }}" required />
+      </label>
+      <label>
+        密码{% if edit_user %}（留空则不修改）{% endif %}
+        <input id="user-password" type="password" value="" {% if not edit_user %}required{% endif %} />
+      </label>
+      <label class="checkbox">
+        <input id="user-is-active" type="checkbox" {% if not edit_user or edit_user.is_active %}checked{% endif %} />
+        启用用户
+      </label>
+      <button id="user-submit" type="submit">{{ '保存修改' if edit_user else '创建用户' }}</button>
+    </form>
+    <div id="user-form-status" class="inline-status" data-testid="user-form-status"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>CSV 批量导入</h2>
+      <a class="ghost" href="{{ root_path }}/users/import-template.csv">下载模板</a>
+    </div>
+    <div class="stack">
+      <input id="import-file" data-testid="import-file" type="file" accept=".csv,text/csv" />
+      <div class="actions">
+        <button id="import-preview-button" data-testid="import-preview-button" type="button">预检查</button>
+        <button id="import-confirm-button" data-testid="import-confirm-button" type="button" disabled>确认导入</button>
+      </div>
+      <div id="import-summary" class="inline-status" data-testid="import-summary"></div>
+      <div class="table-wrap">
+        <table id="import-preview-table" data-testid="import-preview-table">
+          <thead>
+            <tr>
+              <th>行号</th>
+              <th>用户</th>
+              <th>动作</th>
+              <th>状态</th>
+              <th>错误</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>用户列表</h2>
+  </div>
+  <div class="table-wrap">
+    <table id="users-table" data-testid="users-table">
+      <thead>
+        <tr>
+          <th>用户</th>
+          <th>启用</th>
+          <th>当前额度</th>
+          <th>已使用</th>
+          <th>剩余</th>
+          <th>最近活跃</th>
+          <th>24h 会话数</th>
+          <th>配额状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr data-testid="user-row-{{ user.identifier }}">
+          <td>
+            <strong>{{ user.identifier }}</strong><br />
+            <span class="muted">{{ user.display_name }}</span>
+          </td>
+          <td>{{ '是' if user.is_active else '否' }}</td>
+          <td>{{ user.current_limit_tokens | format_number }}</td>
+          <td>{{ user.used_tokens | format_number }}</td>
+          <td>{{ user.remaining_tokens | format_number }}</td>
+          <td>{{ user.last_active_at | format_datetime }}</td>
+          <td>{{ user.active_threads_24h }}</td>
+          <td><span class="badge badge-{{ user.quota_state }}">{{ user.quota_state }}</span></td>
+          <td class="actions">
+            <a class="ghost" href="{{ root_path }}/users?edit={{ user.identifier }}">编辑</a>
+            <button type="button" class="danger" data-delete-user="{{ user.identifier }}">删除</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const editingIdentifier = document.getElementById('editing-identifier').value;
+  const userSubmit = document.getElementById('user-submit');
+  const userForm = document.getElementById('user-form');
+  const userStatus = document.getElementById('user-form-status');
+  const importFile = document.getElementById('import-file');
+  const importPreviewButton = document.getElementById('import-preview-button');
+  const importConfirmButton = document.getElementById('import-confirm-button');
+  const importSummary = document.getElementById('import-summary');
+  const importTableBody = document.querySelector('#import-preview-table tbody');
+  let currentCsvText = '';
+
+  function collectUserPayload() {
+    return {
+      identifier: document.getElementById('user-identifier').value,
+      display_name: document.getElementById('user-display-name').value,
+      password: document.getElementById('user-password').value || null,
+      is_active: document.getElementById('user-is-active').checked
+    };
+  }
+
+  userForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    userSubmit.disabled = true;
+    userSubmit.textContent = editingIdentifier ? '保存中...' : '创建中...';
+    userStatus.textContent = '';
+    try {
+      const method = editingIdentifier ? 'PATCH' : 'POST';
+      const url = editingIdentifier
+        ? `${window.ADMIN_ROOT_PATH}/api/users/${encodeURIComponent(editingIdentifier)}`
+        : `${window.ADMIN_ROOT_PATH}/api/users`;
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(collectUserPayload())
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '保存失败');
+      window.sessionStorage.setItem('adminFlash', editingIdentifier ? '用户已更新' : '用户已创建');
+      window.location.href = `${window.ADMIN_ROOT_PATH}/users`;
+    } catch (error) {
+      userStatus.textContent = error.message || '保存失败';
+      userStatus.className = 'inline-status error';
+    } finally {
+      userSubmit.disabled = false;
+      userSubmit.textContent = editingIdentifier ? '保存修改' : '创建用户';
+    }
+  });
+
+  document.querySelectorAll('[data-delete-user]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const identifier = button.dataset.deleteUser;
+      if (!window.confirm(`确认软删除用户 ${identifier} 吗？`)) return;
+      button.disabled = true;
+      button.textContent = '删除中...';
+      try {
+        const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/users/${encodeURIComponent(identifier)}`, {
+          method: 'DELETE',
+          credentials: 'same-origin'
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '删除失败');
+        window.sessionStorage.setItem('adminFlash', `用户 ${identifier} 已删除`);
+        window.location.reload();
+      } catch (error) {
+        renderFlash(error.message || '删除失败', 'error');
+        button.disabled = false;
+        button.textContent = '删除';
+      }
+    });
+  });
+
+  async function readCsvText() {
+    const file = importFile.files?.[0];
+    if (!file) throw new Error('请先选择 CSV 文件');
+    return await file.text();
+  }
+
+  function renderImportRows(rows) {
+    importTableBody.innerHTML = '';
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${row.row_number}</td>
+        <td>${row.identifier || '-'}</td>
+        <td>${row.action || '-'}</td>
+        <td>${row.status}</td>
+        <td>${row.error_message || ''}</td>
+      `;
+      importTableBody.appendChild(tr);
+    }
+  }
+
+  importPreviewButton.addEventListener('click', async () => {
+    importPreviewButton.disabled = true;
+    importPreviewButton.textContent = '预检查中...';
+    importSummary.textContent = '';
+    try {
+      currentCsvText = await readCsvText();
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/users/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ csv_text: currentCsvText, confirm: false })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '预检查失败');
+      renderImportRows(data.rows);
+      importSummary.textContent = `总行数 ${data.total_rows}，可导入 ${data.success_rows}，错误 ${data.failure_rows}`;
+      importSummary.className = 'inline-status success';
+      importConfirmButton.disabled = data.success_rows === 0;
+    } catch (error) {
+      importSummary.textContent = error.message || '预检查失败';
+      importSummary.className = 'inline-status error';
+      importConfirmButton.disabled = true;
+    } finally {
+      importPreviewButton.disabled = false;
+      importPreviewButton.textContent = '预检查';
+    }
+  });
+
+  importConfirmButton.addEventListener('click', async () => {
+    importConfirmButton.disabled = true;
+    importConfirmButton.textContent = '导入中...';
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/users/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ csv_text: currentCsvText, confirm: true })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '导入失败');
+      renderImportRows(data.rows);
+      importSummary.textContent = `总行数 ${data.total_rows}，成功 ${data.success_rows}，失败 ${data.failure_rows}`;
+      importSummary.className = 'inline-status success';
+      window.sessionStorage.setItem('adminFlash', 'CSV 导入完成');
+      window.setTimeout(() => window.location.reload(), 800);
+    } catch (error) {
+      importSummary.textContent = error.message || '导入失败';
+      importSummary.className = 'inline-status error';
+      importConfirmButton.disabled = false;
+      importConfirmButton.textContent = '确认导入';
+    }
+  });
+</script>
+{% endblock %}

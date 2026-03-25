@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 
 import { LoginForm } from '@/components/LoginForm';
 import { Logo } from '@/components/Logo';
-import { useTheme } from '@/components/ThemeProvider';
 
 import { useQuery } from 'hooks/query';
 
@@ -19,8 +18,6 @@ export default function Login() {
   const [error, setError] = useState('');
   const apiClient = useContext(ChainlitContext);
   const navigate = useNavigate();
-  const { variant } = useTheme();
-  const isDarkMode = variant === 'dark';
 
   const handleCookieAuth = (json: any): void => {
     if (json?.success != true) throw LoginError;
@@ -104,20 +101,18 @@ export default function Login() {
         </div>
       </div>
       {!config?.headerAuth ? (
-        <div className="relative hidden bg-muted lg:block overflow-hidden">
-          <img
-            src={
-              config?.ui?.login_page_image ||
-              apiClient.buildEndpoint('/favicon')
-            }
-            alt="Image"
-            className={`absolute inset-0 h-full w-full object-cover ${
-              isDarkMode
-                ? config?.ui?.login_page_image_dark_filter ||
-                  'brightness-[0.2] grayscale'
-                : config?.ui?.login_page_image_filter || ''
-            }`}
-          />
+        <div className="relative hidden overflow-hidden bg-[radial-gradient(circle_at_top,_hsl(var(--accent))_0%,_transparent_32%),linear-gradient(180deg,hsl(var(--background))_0%,hsl(var(--muted))_100%)] lg:block">
+          <div className="absolute inset-0 opacity-60">
+            <div className="absolute left-[14%] top-[16%] h-40 w-40 rounded-full bg-primary/10 blur-3xl" />
+            <div className="absolute right-[16%] top-[22%] h-56 w-56 rounded-full bg-primary/8 blur-3xl" />
+            <div className="absolute bottom-[14%] left-[22%] h-48 w-48 rounded-full bg-foreground/5 blur-3xl" />
+          </div>
+          <div className="absolute inset-0 bg-[linear-gradient(135deg,transparent_0%,transparent_52%,hsl(var(--border))_52%,transparent_53%,transparent_100%)] opacity-20" />
+          <div className="absolute inset-0">
+            <div className="absolute left-[18%] top-[18%] h-24 w-24 rounded-3xl border border-border/60 bg-background/20 backdrop-blur-sm" />
+            <div className="absolute right-[20%] top-[42%] h-16 w-16 rounded-full border border-border/50 bg-background/10" />
+            <div className="absolute bottom-[20%] left-[34%] h-20 w-20 rotate-12 rounded-2xl border border-border/50 bg-background/10" />
+          </div>
         </div>
       ) : null}
     </div>

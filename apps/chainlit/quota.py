@@ -12,8 +12,14 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from database import create_app_engine
+from ncoai_shared.controlplane import ControlPlaneRepository
+from ncoai_shared.quota_cache import (
+    clear_cached_global_quota_policy,
+    load_cached_global_quota_policy,
+    store_cached_global_quota_policy,
+)
 from quota_repository import QuotaRepository
-from settings import SETTINGS, QuotaSettings
+from settings import SETTINGS
 
 LOGGER = logging.getLogger("ncoai.quota")
 
@@ -29,8 +35,12 @@ def utcnow_iso() -> str:
 @dataclass(slots=True)
 class QuotaConfig:
     limit_tokens: int
+    policy_version: int = 0
     window_start: str | None = None
     window_end: str | None = None
+    updated_at: str | None = None
+    status: str = "ok"
+    message: str | None = None
 
 
 @dataclass(slots=True)
@@ -38,9 +48,12 @@ class QuotaSummary:
     used_tokens: int
     reserved_tokens: int
     limit_tokens: int
+    policy_version: int = 0
     updated_at: str | None = None
     window_start: str | None = None
     window_end: str | None = None
+    status: str = "ok"
+    message: str | None = None
 
     @property
     def remaining_tokens(self) -> int:
@@ -53,9 +66,15 @@ class QuotaSummary:
     def to_metadata_summary(self) -> dict[str, Any]:
         return {
             "used_tokens": self.used_tokens,
+            "reserved_tokens": self.reserved_tokens,
             "limit_tokens": self.limit_tokens,
             "remaining_tokens": self.remaining_tokens,
+            "policy_version": self.policy_version,
             "updated_at": self.updated_at,
+            "window_start": self.window_start,
+            "window_end": self.window_end,
+            "status": self.status,
+            "message": self.message,
         }
 
     def to_api_dict(self) -> dict[str, Any]:
@@ -64,9 +83,12 @@ class QuotaSummary:
             "reserved_tokens": self.reserved_tokens,
             "limit_tokens": self.limit_tokens,
             "remaining_tokens": self.remaining_tokens,
+            "policy_version": self.policy_version,
             "updated_at": self.updated_at,
             "window_start": self.window_start,
             "window_end": self.window_end,
+            "status": self.status,
+            "message": self.message,
         }
 
 
@@ -120,20 +142,87 @@ class QuotaExceededError(RuntimeError):
         self.user_summary = user_summary
 
 
-class FixedQuotaConfigProvider:
-    def __init__(self, settings: QuotaSettings) -> None:
-        self.thread_limit_tokens = settings.thread_limit_tokens
-        self.user_limit_tokens = settings.user_limit_tokens
+class DatabaseQuotaConfigProvider:
+    def __init__(
+        self,
+        repository: ControlPlaneRepository,
+        *,
+        thread_limit_tokens: int,
+    ) -> None:
+        self._repository = repository
+        self._thread_limit_tokens = thread_limit_tokens
+        self._redis: Redis | None = None
+
+    def bind_redis(self, redis: Redis) -> None:
+        self._redis = redis
 
     async def get_thread_limit(
         self, thread_id: str, user_identifier: str
     ) -> QuotaConfig:
         del thread_id, user_identifier
-        return QuotaConfig(limit_tokens=self.thread_limit_tokens)
+        return QuotaConfig(limit_tokens=self._thread_limit_tokens)
 
     async def get_user_limit(self, user_identifier: str, now: datetime) -> QuotaConfig:
-        del user_identifier, now
-        return QuotaConfig(limit_tokens=self.user_limit_tokens)
+        del user_identifier
+        policy = await self._get_global_policy()
+        if policy is None:
+            LOGGER.warning("No global quota policy configured")
+            return QuotaConfig(
+                limit_tokens=0,
+                policy_version=0,
+                updated_at=utcnow_iso(),
+                status="missing_policy",
+                message="当前没有可用配额配置",
+            )
+        if not policy.get("is_active"):
+            return QuotaConfig(
+                limit_tokens=int(policy["total_token_limit"]),
+                policy_version=int(policy.get("policy_version") or 0),
+                window_start=policy.get("window_start"),
+                window_end=policy.get("window_end"),
+                updated_at=policy.get("updated_at"),
+                status="missing_policy",
+                message="当前没有可用配额配置",
+            )
+
+        window_start = policy.get("window_start")
+        window_end = policy.get("window_end")
+        start_dt = self._deserialize_datetime(window_start)
+        end_dt = self._deserialize_datetime(window_end)
+        if (start_dt and now < start_dt) or (end_dt and now > end_dt):
+            return QuotaConfig(
+                limit_tokens=int(policy["total_token_limit"]),
+                policy_version=int(policy.get("policy_version") or 0),
+                window_start=window_start,
+                window_end=window_end,
+                updated_at=policy.get("updated_at"),
+                status="window_closed",
+                message="当前不在配额生效时间内",
+            )
+        return QuotaConfig(
+            limit_tokens=int(policy["total_token_limit"]),
+            policy_version=int(policy.get("policy_version") or 0),
+            window_start=window_start,
+            window_end=window_end,
+            updated_at=policy.get("updated_at"),
+        )
+
+    async def _get_global_policy(self) -> dict[str, Any] | None:
+        if self._redis is not None:
+            cached = await load_cached_global_quota_policy(self._redis)
+            if cached is not None:
+                return cached.to_dict()
+        policy = await self._repository.get_global_quota_policy()
+        if policy and self._redis is not None:
+            await store_cached_global_quota_policy(self._redis, policy)
+        return policy
+
+    def _deserialize_datetime(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value))
 
 
 class QuotaService:
@@ -262,13 +351,26 @@ return {1}
         self._settings = settings
         self._engine: AsyncEngine = create_app_engine(database_url)
         self._repository = QuotaRepository(self._engine)
-        self._config_provider = FixedQuotaConfigProvider(settings.quota)
+        self._control_plane_repository = ControlPlaneRepository(self._engine)
+        self._config_provider = DatabaseQuotaConfigProvider(
+            self._control_plane_repository,
+            thread_limit_tokens=settings.models.max_model_len,
+        )
         self._reservation_ttl_seconds = settings.quota.reservation_ttl_seconds
         self._default_max_completion_tokens = (
             settings.quota.default_max_completion_tokens
         )
         self._prompt_safety_tokens = settings.quota.prompt_safety_tokens
         self._encoder = tiktoken.get_encoding(settings.quota.tiktoken_encoding)
+        self._minimum_user_request_tokens = (
+            self.count_messages_tokens(
+                [
+                    {"role": "system", "content": settings.models.system_prompt},
+                    {"role": "user", "content": ""},
+                ]
+            )
+            + self._prompt_safety_tokens
+        )
         self._redis: Redis | None = None
         self._initialized = False
 
@@ -279,6 +381,7 @@ return {1}
             self._settings.redis.url, decode_responses=True
         )
         await self._redis.ping()
+        self._config_provider.bind_redis(self._redis)
         await self.reconcile_stale_reservations()
         await self.rebuild_hot_cache()
         self._initialized = True
@@ -313,6 +416,38 @@ return {1}
                 )
         return total + 2
 
+    def _format_tokens(self, value: int) -> str:
+        return f"{max(value, 0):,}"
+
+    def _thread_blocked_message(
+        self,
+        summary: QuotaSummary,
+        prompt_budget_tokens: int,
+    ) -> str:
+        if summary.available_tokens <= 0:
+            return "当前对话额度已用尽"
+        required_tokens = prompt_budget_tokens + 1
+        return (
+            "当前对话剩余额度不足以容纳下一轮上下文"
+            f"（剩余 {self._format_tokens(summary.available_tokens)} tok，"
+            f"至少需要 {self._format_tokens(required_tokens)} tok），请新建对话"
+        )
+
+    def _user_blocked_message(
+        self,
+        summary: QuotaSummary,
+        minimum_required_tokens: int | None = None,
+    ) -> str:
+        if summary.available_tokens <= 0:
+            return "用户总额度已用尽"
+        if minimum_required_tokens is None:
+            minimum_required_tokens = self._minimum_user_request_tokens
+        return (
+            "用户总额度剩余不足以发起下一次请求"
+            f"（剩余 {self._format_tokens(summary.available_tokens)} tok，"
+            f"至少需要 {self._format_tokens(minimum_required_tokens)} tok）"
+        )
+
     async def reserve(
         self,
         thread_id: str,
@@ -333,6 +468,14 @@ return {1}
         thread_summary = await self._ensure_thread_hot(thread_id, thread_config)
         user_summary = await self._ensure_user_hot(user_identifier, user_config)
 
+        if user_config.status != "ok":
+            raise QuotaExceededError(
+                "window" if user_config.status == "window_closed" else "config",
+                user_config.message or "当前没有可用配额配置",
+                thread_summary,
+                user_summary,
+            )
+
         allowed_completion_tokens = min(
             self._default_max_completion_tokens,
             thread_summary.available_tokens - prompt_budget_tokens,
@@ -346,9 +489,9 @@ return {1}
                 else "user"
             )
             message = (
-                "当前对话额度已用尽"
+                self._thread_blocked_message(thread_summary, prompt_budget_tokens)
                 if scope == "thread"
-                else "用户总额度已用尽"
+                else self._user_blocked_message(user_summary)
             )
             raise QuotaExceededError(scope, message, thread_summary, user_summary)
 
@@ -381,9 +524,9 @@ return {1}
             latest_thread = await self._get_hot_summary(thread_key, thread_config)
             latest_user = await self._get_hot_summary(user_key, user_config)
             message = (
-                "当前对话额度已用尽"
+                self._thread_blocked_message(latest_thread, prompt_budget_tokens)
                 if scope == "thread"
-                else "用户总额度已用尽"
+                else self._user_blocked_message(latest_user)
             )
             raise QuotaExceededError(scope, message, latest_thread, latest_user)
 
@@ -456,6 +599,53 @@ return {1}
             prompt_tokens,
             completion_tokens,
         )
+        thread_config = await self._config_provider.get_thread_limit(
+            reservation.thread_id,
+            reservation.user_identifier,
+        )
+        user_config = await self._config_provider.get_user_limit(
+            reservation.user_identifier,
+            utcnow(),
+        )
+        thread_summary = await self._get_hot_summary(
+            self._thread_key(reservation.thread_id),
+            thread_config,
+        )
+        user_summary = await self._get_hot_summary(
+            self._user_key(reservation.user_identifier),
+            user_config,
+        )
+        if user_config.status == "ok":
+            user_summary.used_tokens = await self._repository.sum_user_window_usage(
+                reservation.user_identifier,
+                window_start=self._deserialize_datetime(user_config.window_start),
+                window_end=self._deserialize_datetime(user_config.window_end),
+            )
+            user_summary.limit_tokens = user_config.limit_tokens
+            user_summary.policy_version = user_config.policy_version
+            user_summary.window_start = user_config.window_start
+            user_summary.window_end = user_config.window_end
+            user_summary.updated_at = utcnow_iso()
+        thread_summary.used_tokens = max(
+            thread_summary.used_tokens,
+            reservation.thread_summary.used_tokens + total_tokens,
+        )
+        user_summary.used_tokens = max(
+            user_summary.used_tokens,
+            reservation.user_summary.used_tokens + total_tokens,
+        )
+        await self._set_hot_summary(
+            self._thread_key(reservation.thread_id),
+            thread_summary,
+        )
+        await self._set_hot_summary(
+            self._user_key(reservation.user_identifier),
+            user_summary,
+        )
+        user_summary = self._apply_user_summary_status(
+            user_summary,
+            user_config,
+        )
         await self._persist_thread_metadata(reservation.thread_id, thread_summary)
         return QuotaSettlement(
             request_id=reservation.request_id,
@@ -492,11 +682,39 @@ return {1}
     async def get_user_quota(self, user_identifier: str) -> QuotaSummary:
         await self._ensure_ready()
         config = await self._config_provider.get_user_limit(user_identifier, utcnow())
-        return await self._ensure_user_hot(user_identifier, config)
+        return self._apply_user_summary_status(
+            await self._ensure_user_hot(user_identifier, config),
+            config,
+        )
+
+    async def mark_thread_blocked(
+        self,
+        thread_id: str,
+        summary: QuotaSummary,
+        message: str,
+    ) -> QuotaSummary:
+        blocked_summary = QuotaSummary(
+            used_tokens=summary.used_tokens,
+            reserved_tokens=summary.reserved_tokens,
+            limit_tokens=summary.limit_tokens,
+            policy_version=summary.policy_version,
+            updated_at=utcnow_iso(),
+            window_start=summary.window_start,
+            window_end=summary.window_end,
+            status="blocked",
+            message=message,
+        )
+        await self._persist_thread_metadata(thread_id, blocked_summary)
+        return blocked_summary
 
     async def rebuild_hot_cache(self) -> None:
         await self._ensure_ready_for_cache_only()
         assert self._redis is not None
+        policy = await self._control_plane_repository.get_global_quota_policy()
+        if policy is None:
+            await clear_cached_global_quota_policy(self._redis)
+        else:
+            await store_cached_global_quota_policy(self._redis, policy)
         for row in await self._repository.list_thread_summaries():
             await self._redis.hset(
                 self._thread_key(row["thread_id"]),
@@ -515,7 +733,10 @@ return {1}
                     "used_tokens": int(row["used_tokens"] or 0),
                     "reserved_tokens": int(row["reserved_tokens"] or 0),
                     "limit_tokens": int(row["limit_tokens"] or 0),
+                    "policy_version": int(row.get("policy_version") or 0),
                     "updated_at": self._serialize_datetime(row["updated_at"]),
+                    "window_start": self._serialize_datetime(row.get("window_start")) or "",
+                    "window_end": self._serialize_datetime(row.get("window_end")) or "",
                 },
             )
 
@@ -535,6 +756,10 @@ return {1}
     ) -> QuotaSummary:
         key = self._thread_key(thread_id)
         summary = await self._get_hot_summary(key, config)
+        if summary.limit_tokens != config.limit_tokens:
+            summary.limit_tokens = config.limit_tokens
+            summary.updated_at = utcnow_iso()
+            await self._set_hot_summary(key, summary)
         if summary.updated_at is not None or summary.used_tokens or summary.reserved_tokens:
             return summary
         db_summary = await self._load_thread_summary(thread_id, config)
@@ -544,15 +769,39 @@ return {1}
     async def _ensure_user_hot(
         self, user_identifier: str, config: QuotaConfig
     ) -> QuotaSummary:
+        if config.status == "missing_policy":
+            return QuotaSummary(
+                used_tokens=0,
+                reserved_tokens=0,
+                limit_tokens=config.limit_tokens,
+                policy_version=config.policy_version,
+                updated_at=config.updated_at,
+                window_start=config.window_start,
+                window_end=config.window_end,
+                status=config.status,
+                message=config.message,
+            )
+
         key = self._user_key(user_identifier)
         summary = await self._get_hot_summary(key, config)
+        config_changed = (
+            summary.limit_tokens != config.limit_tokens
+            or summary.policy_version != config.policy_version
+            or summary.window_start != config.window_start
+            or summary.window_end != config.window_end
+        )
+        if config_changed:
+            db_summary = await self._load_user_summary(user_identifier, config)
+            await self._set_hot_summary(key, db_summary)
+            return self._apply_user_summary_status(db_summary, config)
         if summary.updated_at is not None or summary.used_tokens or summary.reserved_tokens:
-            summary.window_start = config.window_start
-            summary.window_end = config.window_end
-            return summary
+            summary.limit_tokens = config.limit_tokens
+            summary.status = config.status
+            summary.message = config.message
+            return self._apply_user_summary_status(summary, config)
         db_summary = await self._load_user_summary(user_identifier, config)
         await self._set_hot_summary(key, db_summary)
-        return db_summary
+        return self._apply_user_summary_status(db_summary, config)
 
     async def _get_hot_summary(self, key: str, config: QuotaConfig) -> QuotaSummary:
         assert self._redis is not None
@@ -561,9 +810,12 @@ return {1}
             used_tokens=int(values.get("used_tokens", 0) or 0),
             reserved_tokens=int(values.get("reserved_tokens", 0) or 0),
             limit_tokens=int(values.get("limit_tokens", config.limit_tokens) or config.limit_tokens),
+            policy_version=int(values.get("policy_version", config.policy_version) or config.policy_version),
             updated_at=values.get("updated_at"),
-            window_start=config.window_start,
-            window_end=config.window_end,
+            window_start=values.get("window_start") or None,
+            window_end=values.get("window_end") or None,
+            status=config.status,
+            message=config.message,
         )
 
     async def _set_hot_summary(self, key: str, summary: QuotaSummary) -> None:
@@ -574,7 +826,10 @@ return {1}
                 "used_tokens": summary.used_tokens,
                 "reserved_tokens": summary.reserved_tokens,
                 "limit_tokens": summary.limit_tokens,
+                "policy_version": summary.policy_version,
                 "updated_at": summary.updated_at or utcnow_iso(),
+                "window_start": summary.window_start or "",
+                "window_end": summary.window_end or "",
             },
         )
 
@@ -592,30 +847,72 @@ return {1}
         return QuotaSummary(
             used_tokens=int(row["used_tokens"] or 0),
             reserved_tokens=int(row["reserved_tokens"] or 0),
-            limit_tokens=int(row["limit_tokens"] or config.limit_tokens),
+            limit_tokens=config.limit_tokens,
             updated_at=self._serialize_datetime(row["updated_at"]),
         )
 
     async def _load_user_summary(
         self, user_identifier: str, config: QuotaConfig
     ) -> QuotaSummary:
-        row = await self._repository.load_user_summary(user_identifier)
-        if not row:
+        if config.status == "missing_policy":
             return QuotaSummary(
                 used_tokens=0,
                 reserved_tokens=0,
                 limit_tokens=config.limit_tokens,
-                updated_at=None,
+                policy_version=config.policy_version,
+                updated_at=config.updated_at,
                 window_start=config.window_start,
                 window_end=config.window_end,
+                status=config.status,
+                message=config.message,
             )
+        row = await self._repository.load_user_summary(user_identifier)
+        matching_window = bool(
+            row
+            and int(row.get("policy_version") or 0) == config.policy_version
+            and self._serialize_datetime(row.get("window_start")) == config.window_start
+            and self._serialize_datetime(row.get("window_end")) == config.window_end
+        )
+        if matching_window:
+            reserved_tokens = int(row["reserved_tokens"] or 0)
+            return QuotaSummary(
+                used_tokens=int(row["used_tokens"] or 0),
+                reserved_tokens=reserved_tokens,
+                limit_tokens=config.limit_tokens,
+                policy_version=config.policy_version,
+                updated_at=self._serialize_datetime(row["updated_at"]),
+                window_start=config.window_start,
+                window_end=config.window_end,
+                status=config.status,
+                message=config.message,
+            )
+
+        used_tokens = await self._repository.sum_user_window_usage(
+            user_identifier,
+            window_start=self._deserialize_datetime(config.window_start),
+            window_end=self._deserialize_datetime(config.window_end),
+        )
+        updated_at = self._deserialize_datetime(config.updated_at) or utcnow()
+        await self._repository.upsert_user_summary(
+            user_identifier=user_identifier,
+            used_tokens=used_tokens,
+            reserved_tokens=0,
+            limit_tokens=config.limit_tokens,
+            policy_version=config.policy_version,
+            window_start=self._deserialize_datetime(config.window_start),
+            window_end=self._deserialize_datetime(config.window_end),
+            updated_at=updated_at,
+        )
         return QuotaSummary(
-            used_tokens=int(row["used_tokens"] or 0),
-            reserved_tokens=int(row["reserved_tokens"] or 0),
-            limit_tokens=int(row["limit_tokens"] or config.limit_tokens),
-            updated_at=self._serialize_datetime(row["updated_at"]),
-            window_start=self._serialize_datetime(row["window_start"]),
-            window_end=self._serialize_datetime(row["window_end"]),
+            used_tokens=used_tokens,
+            reserved_tokens=0,
+            limit_tokens=config.limit_tokens,
+            policy_version=config.policy_version,
+            updated_at=self._serialize_datetime(updated_at),
+            window_start=config.window_start,
+            window_end=config.window_end,
+            status=config.status,
+            message=config.message,
         )
 
     async def _persist_reservation(
@@ -639,8 +936,9 @@ return {1}
             prompt_tokens=prompt_tokens,
             thread_limit_tokens=thread_config.limit_tokens,
             user_limit_tokens=user_config.limit_tokens,
-            window_start=user_config.window_start,
-            window_end=user_config.window_end,
+            user_policy_version=user_config.policy_version,
+            window_start=self._deserialize_datetime(user_config.window_start),
+            window_end=self._deserialize_datetime(user_config.window_end),
             created_at=now,
         )
 
@@ -670,13 +968,12 @@ return {1}
         )
         if not row:
             raise RuntimeError(f"Unknown quota request_id: {request_id}")
-        if row["status"] != "reserved":
-            thread_config = await self._config_provider.get_thread_limit(
-                row["thread_id"], row["user_identifier"]
-            )
-            user_config = await self._config_provider.get_user_limit(
-                row["user_identifier"], now
-            )
+        thread_config = await self._config_provider.get_thread_limit(
+            row["thread_id"], row["user_identifier"]
+        )
+        user_config = await self._config_provider.get_user_limit(
+            row["user_identifier"], now
+        )
 
         return (
             await self._load_thread_summary(row["thread_id"], thread_config),
@@ -694,13 +991,12 @@ return {1}
         )
         if not row:
             raise RuntimeError(f"Unknown quota request_id: {request_id}")
-        if row["status"] != "reserved":
-            thread_config = await self._config_provider.get_thread_limit(
-                row["thread_id"], row["user_identifier"]
-            )
-            user_config = await self._config_provider.get_user_limit(
-                row["user_identifier"], now
-            )
+        thread_config = await self._config_provider.get_thread_limit(
+            row["thread_id"], row["user_identifier"]
+        )
+        user_config = await self._config_provider.get_user_limit(
+            row["user_identifier"], now
+        )
 
         return (
             await self._load_thread_summary(row["thread_id"], thread_config),
@@ -752,3 +1048,38 @@ return {1}
         if isinstance(value, datetime):
             return value.isoformat()
         return str(value)
+
+    def _deserialize_datetime(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value))
+
+    def _is_older(self, current: str | None, other: str | None) -> bool:
+        other_dt = self._deserialize_datetime(other)
+        if not other_dt:
+            return False
+        current_dt = self._deserialize_datetime(current)
+        if not current_dt:
+            return True
+        return current_dt < other_dt
+
+    def _apply_user_summary_status(
+        self,
+        summary: QuotaSummary,
+        config: QuotaConfig,
+    ) -> QuotaSummary:
+        summary.limit_tokens = config.limit_tokens
+        summary.policy_version = config.policy_version
+        summary.window_start = config.window_start
+        summary.window_end = config.window_end
+        summary.status = config.status
+        summary.message = config.message
+        if (
+            config.status == "ok"
+            and summary.available_tokens < self._minimum_user_request_tokens
+        ):
+            summary.status = "blocked"
+            summary.message = self._user_blocked_message(summary)
+        return summary

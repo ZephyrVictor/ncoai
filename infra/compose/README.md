@@ -1,36 +1,52 @@
-# Compose Files
+# Compose Layout
 
-These compose files only manage supporting edge services. The chat application itself runs as local processes.
+The deployment now uses two compose entrypoints:
 
-## Managed by compose
+- `core.yml`
+  - `postgres`
+  - `redis`
+  - `nginx`
+- `observability.yml`
+  - `prometheus`
+  - `grafana`
+  - `node-exporter`
+  - `postgres-exporter`
+  - `redis-exporter`
+  - `blackbox-exporter`
 
-1. `postgres`
-2. `redis`
-3. `prometheus`
-4. `grafana`
-5. `nginx`
+Application services are intentionally **not** containerized in this phase:
 
-## Not managed by compose in this MVP
+- `vLLM`
+- `LiteLLM`
+- `Chainlit`
+- `Admin`
 
-1. `vLLM`
-2. `LiteLLM`
-3. `Chainlit`
+Those run on the host and are managed by `python3 devctl.py up`.
 
-Those three are started with local scripts and `python3 devctl.py up`.
+## Environment Sources
 
-## Primary development compose file
+Preferred deployment env files:
+
+- `infra/env/common.env`
+- `infra/env/compose.env`
+- `infra/env/secrets.env`
+
+Legacy fallback:
+
+- `infra/env/.env.dev`
+
+## Common Commands
 
 ```bash
-docker compose -f infra/compose/dev-services.yml --env-file infra/env/.env.dev up -d postgres
+bash scripts/deploy/init-infra.sh
+bash scripts/deploy/init-stack.sh
+bash scripts/deploy/start-services.sh
+python3 devctl.py up
+python3 devctl.py down
 ```
 
-If Docker Hub access is healthy, nginx can be started as well:
+## Offline Image List
 
-```bash
-docker compose -f infra/compose/dev-services.yml --env-file infra/env/.env.dev up -d nginx
-```
+See:
 
-## External routes
-
-1. `http://127.0.0.1:8088/` -> redirects to `/chat`
-2. `http://127.0.0.1:8088/chat` -> proxies to Chainlit on `3100`
+- `infra/compose/images.manifest.txt`

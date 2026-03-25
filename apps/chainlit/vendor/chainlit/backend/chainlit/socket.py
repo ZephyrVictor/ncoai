@@ -51,7 +51,17 @@ def restore_existing_session(sid, session_id, emit_fn, emit_call_fn, environ):
 
 async def persist_user_session(thread_id: str, metadata: Dict):
     if data_layer := get_data_layer():
-        await data_layer.update_thread(thread_id=thread_id, metadata=metadata)
+        merged_metadata = metadata
+        try:
+            thread = await data_layer.get_thread(thread_id=thread_id)
+            existing_metadata = (thread or {}).get("metadata") or {}
+            if isinstance(existing_metadata, str):
+                existing_metadata = json.loads(existing_metadata)
+            if isinstance(existing_metadata, dict):
+                merged_metadata = {**existing_metadata, **metadata}
+        except Exception:
+            merged_metadata = metadata
+        await data_layer.update_thread(thread_id=thread_id, metadata=merged_metadata)
 
 
 async def resume_thread(session: WebsocketSession):

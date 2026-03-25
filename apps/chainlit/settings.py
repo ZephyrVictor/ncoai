@@ -51,12 +51,19 @@ class LiteLLMSettings:
 class ModelSettings:
     default_model: str
     thinking_model: str
+    max_model_len: int
     system_prompt: str
     thinking_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
 class AuthSettings:
+    username: str
+    password: str
+
+
+@dataclass(frozen=True, slots=True)
+class AdminSettings:
     username: str
     password: str
 
@@ -78,6 +85,7 @@ class AppSettings:
     litellm: LiteLLMSettings
     models: ModelSettings
     auth: AuthSettings
+    admin: AdminSettings
     quota: QuotaSettings
     chainlit_root_path: str
 
@@ -107,6 +115,7 @@ def load_settings() -> AppSettings:
         models=ModelSettings(
             default_model="qwen35b_no_think",
             thinking_model="qwen35b_think",
+            max_model_len=int(os.getenv("MAX_MODEL_LEN", "8192")),
             system_prompt=os.getenv(
                 "CHAINLIT_SYSTEM_PROMPT",
                 "You are a concise and helpful assistant.",
@@ -116,6 +125,10 @@ def load_settings() -> AppSettings:
         auth=AuthSettings(
             username=os.getenv("CHAINLIT_APP_USERNAME", "acceptance"),
             password=os.getenv("CHAINLIT_APP_PASSWORD", "acceptance123"),
+        ),
+        admin=AdminSettings(
+            username=os.getenv("ADMIN_APP_USERNAME", "admin"),
+            password=os.getenv("ADMIN_APP_PASSWORD", "admin123"),
         ),
         quota=QuotaSettings(
             thread_limit_tokens=int(os.getenv("CHAINLIT_THREAD_LIMIT_TOKENS", "8192")),

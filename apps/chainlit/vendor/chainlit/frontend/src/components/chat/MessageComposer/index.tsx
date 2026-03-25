@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import {
   FileSpec,
+  IQuotaSummary,
   IStep,
   commandsState,
   useAuth,
@@ -55,26 +56,78 @@ interface Props {
   autoScrollRef: MutableRefObject<boolean>;
 }
 
-const findLastQuotaBlockedReason = (steps: IStep[]): string | undefined => {
+interface QuotaBlockedState {
+  reason: string;
+  scope: 'thread' | 'user';
+  updatedAt?: string;
+}
+
+const findLastQuotaBlockedState = (
+  steps: IStep[]
+): QuotaBlockedState | undefined => {
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     const step = steps[index];
     if (step.steps?.length) {
-      const nestedReason = findLastQuotaBlockedReason(step.steps);
-      if (nestedReason) {
-        return nestedReason;
+      const nestedBlockedState = findLastQuotaBlockedState(step.steps);
+      if (nestedBlockedState) {
+        return nestedBlockedState;
       }
     }
 
     const blockedScope = step.metadata?.quota_status?.blocked_scope;
     if (blockedScope === 'thread') {
-      return '当前对话额度已用尽';
+      return {
+        reason:
+          step.metadata?.quota_status?.reason || '当前对话额度已用尽',
+        scope: 'thread',
+        updatedAt: step.metadata?.token_usage?.updated_at
+      };
     }
     if (blockedScope === 'user') {
-      return '用户总额度已用尽';
+      return {
+        reason:
+          step.metadata?.quota_status?.reason || '用户总额度已用尽',
+        scope: 'user',
+        updatedAt: step.metadata?.token_usage?.updated_at
+      };
+    }
+    if (blockedScope === 'window' || blockedScope === 'config') {
+      return {
+        reason:
+          step.metadata?.quota_status?.reason ||
+          (blockedScope === 'window'
+            ? '当前不在配额生效时间内'
+            : '当前没有可用配额配置'),
+        scope: 'user',
+        updatedAt: step.metadata?.token_usage?.updated_at
+      };
     }
   }
 
   return undefined;
+};
+
+const isBlockedStateResolved = (
+  blockedState: QuotaBlockedState | undefined,
+  threadQuota?: IQuotaSummary,
+  userQuota?: IQuotaSummary
+) => {
+  if (!blockedState) {
+    return true;
+  }
+
+  const activeBlockedReason = getQuotaBlockedReason(threadQuota, userQuota);
+  if (activeBlockedReason) {
+    return false;
+  }
+
+  const relevantQuota =
+    blockedState.scope === 'thread' ? threadQuota : userQuota;
+  if (!relevantQuota?.updated_at || !blockedState.updatedAt) {
+    return false;
+  }
+
+  return Date.parse(relevantQuota.updated_at) > Date.parse(blockedState.updatedAt);
 };
 
 export default function MessageComposer({
@@ -105,12 +158,17 @@ export default function MessageComposer({
   const { sendMessage, replyMessage } = useChatInteract();
   const { askUser, chatSettingsInputs, disabled: _disabled } = useChatData();
   const { messages } = useChatMessages();
-  const { threadQuota, userQuota } = useQuotaSummary();
-  const lastQuotaBlockedReason = findLastQuotaBlockedReason(messages);
+  const { threadQuota, userQuota, refreshUserQuota } = useQuotaSummary();
+  const lastQuotaBlockedState = findLastQuotaBlockedState(messages);
+  const currentQuotaBlockedReason = getQuotaBlockedReason(threadQuota, userQuota);
   const quotaBlockedReason =
-    getQuotaBlockedReason(threadQuota, userQuota) || lastQuotaBlockedReason;
-  const disabled =
-    _disabled || !!attachments.find((a) => !a.uploaded) || !!quotaBlockedReason;
+    currentQuotaBlockedReason ||
+    (!isBlockedStateResolved(lastQuotaBlockedState, threadQuota, userQuota)
+      ? lastQuotaBlockedState?.reason
+      : undefined);
+  const hasPendingUploads = !!attachments.find((a) => !a.uploaded);
+  const interactionDisabled = _disabled || hasPendingUploads;
+  const disabled = interactionDisabled || !!quotaBlockedReason;
 
   const { config } = useConfig();
   const showSettingsInComposer =
@@ -241,11 +299,19 @@ export default function MessageComposer({
     [user, replyMessage, autoScrollRef]
   );
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     if (
-      disabled ||
       (value.trim() === '' && attachments.length === 0 && !selectedCommand)
     ) {
+      return;
+    }
+
+    const latestUserQuota = await refreshUserQuota();
+    const blockedReasonAfterRefresh = getQuotaBlockedReason(
+      threadQuota,
+      latestUserQuota || userQuota
+    );
+    if (interactionDisabled || blockedReasonAfterRefresh) {
       return;
     }
 
@@ -260,13 +326,16 @@ export default function MessageComposer({
     inputRef.current?.reset();
   }, [
     value,
-    disabled,
+    interactionDisabled,
     askUser,
     attachments,
     selectedCommand,
     setAttachments,
     onSubmit,
-    onReply
+    onReply,
+    refreshUserQuota,
+    threadQuota,
+    userQuota
   ]);
 
   useEffect(() => {

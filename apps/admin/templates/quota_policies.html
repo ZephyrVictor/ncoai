@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h1>全局配额配置</h1>
+    </div>
+    <p class="muted">只保留一个全局策略，用户总额度按配置时间窗内的已结算 token 统计。</p>
+    <div class="readonly-badge" data-testid="session-limit-readonly">当前 session max_tokens: {{ model_max_tokens | format_number }}</div>
+    <form id="policy-form" data-testid="policy-form" class="stack">
+      <label>
+        总额度
+        <input id="policy-limit" type="number" min="1" value="{{ quota_policy.total_token_limit if quota_policy else '' }}" required />
+      </label>
+      <label>
+        开始时间
+        <input id="policy-window-start" type="datetime-local" value="{{ quota_policy.window_start | format_datetime_input if quota_policy else '' }}" required />
+      </label>
+      <label>
+        结束时间
+        <input id="policy-window-end" type="datetime-local" value="{{ quota_policy.window_end | format_datetime_input if quota_policy else '' }}" required />
+      </label>
+      <label class="checkbox">
+        <input id="policy-is-active" type="checkbox" {% if not quota_policy or quota_policy.is_active %}checked{% endif %} />
+        启用配置
+      </label>
+      <button id="policy-submit" type="submit">保存配置</button>
+    </form>
+    <div id="policy-status" class="inline-status" data-testid="policy-status"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>当前状态</h2>
+    </div>
+    <div class="stack" data-testid="policy-current-summary">
+      <div><strong>总额度：</strong>{% if quota_policy %}{{ quota_policy.total_token_limit | format_number }}{% else %}-{% endif %}</div>
+      <div><strong>时间范围：</strong>{% if quota_policy %}{{ quota_policy.window_start | format_datetime }} ~ {{ quota_policy.window_end | format_datetime }}{% else %}-{% endif %}</div>
+      <div><strong>启用：</strong>{% if quota_policy %}{{ '是' if quota_policy.is_active else '否' }}{% else %}-{% endif %}</div>
+      <div><strong>当前生效：</strong>{% if quota_policy %}{{ '是' if quota_policy.is_active and quota_policy.active_now else '否' }}{% else %}否{% endif %}</div>
+      <div><strong>更新时间：</strong>{% if quota_policy %}{{ quota_policy.updated_at | format_datetime }}{% else %}-{% endif %}</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const policyForm = document.getElementById('policy-form');
+  const policySubmit = document.getElementById('policy-submit');
+  const policyStatus = document.getElementById('policy-status');
+
+  function collectPolicyPayload() {
+    return {
+      total_token_limit: Number(document.getElementById('policy-limit').value),
+      is_active: document.getElementById('policy-is-active').checked,
+      window_start_local: document.getElementById('policy-window-start').value,
+      window_end_local: document.getElementById('policy-window-end').value
+    };
+  }
+
+  policyForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    policySubmit.disabled = true;
+    policySubmit.textContent = '保存中...';
+    policyStatus.textContent = '';
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/quota-policy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(collectPolicyPayload())
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '保存失败');
+      window.sessionStorage.setItem('adminFlash', '全局配额已更新');
+      window.location.href = `${window.ADMIN_ROOT_PATH}/quota-policies`;
+    } catch (error) {
+      policyStatus.textContent = error.message || '保存失败';
+      policyStatus.className = 'inline-status error';
+    } finally {
+      policySubmit.disabled = false;
+      policySubmit.textContent = '保存配置';
+    }
+  });
+</script>
+{% endblock %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from time import monotonic
 from typing import Any
 
 import chainlit as cl
@@ -17,12 +18,15 @@ from chainlit.types import ChatProfile, ThreadDict
 from chainlit.user import PersistedUser, User
 from openai import AsyncOpenAI
 
-from database import ensure_chainlit_schema
+from database import create_app_engine
+from ncoai_shared.controlplane import ControlPlaneRepository
+from ncoai_shared.security import verify_password
 from quota import QuotaExceededError, QuotaService
 from settings import SETTINGS
 
 LOGGER = logging.getLogger("ncoai.chainlit")
-asyncio.run(ensure_chainlit_schema(SETTINGS.database.async_url))
+CONTROL_PLANE_ENGINE = create_app_engine(SETTINGS.database.async_url)
+CONTROL_PLANE_REPOSITORY = ControlPlaneRepository(CONTROL_PLANE_ENGINE)
 DATA_LAYER = SQLAlchemyDataLayer(SETTINGS.database.async_url, storage_provider=None)
 QUOTA_SERVICE = QuotaService(SETTINGS.database.async_url, settings=SETTINGS)
 
@@ -49,6 +53,20 @@ def current_user_identifier() -> str:
     if user and getattr(user, "identifier", None):
         return user.identifier
     return "anonymous"
+
+
+async def current_managed_user() -> dict[str, Any] | None:
+    identifier = current_user_identifier()
+    if not identifier or identifier == "anonymous":
+        return None
+    return await CONTROL_PLANE_REPOSITORY.get_managed_user(
+        identifier,
+        include_deleted=True,
+    )
+
+
+def is_managed_user_active(user: dict[str, Any] | None) -> bool:
+    return bool(user and user.get("is_active") and not user.get("is_deleted"))
 
 
 def available_models() -> list[str]:
@@ -80,12 +98,13 @@ def build_client() -> AsyncOpenAI:
 
 def quota_message_metadata(
     scope: str | None,
+    message: str,
     thread_summary: dict[str, Any],
     user_summary: dict[str, Any],
 ) -> dict[str, Any]:
     updated_at = thread_summary.get("updated_at") or user_summary.get("updated_at")
     return {
-        "quota_status": {"blocked_scope": scope},
+        "quota_status": {"blocked_scope": scope, "reason": message},
         "token_usage": {
             "request_tokens": 0,
             "prompt_tokens": 0,
@@ -110,6 +129,37 @@ def parse_thread_metadata(thread: ThreadDict) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+async def persist_message_snapshot(message: cl.Message) -> None:
+    data_layer = get_data_layer()
+    if not data_layer:
+        return
+
+    try:
+        await data_layer.update_step(message.to_dict())
+    except Exception as exc:  # pragma: no cover - operational path
+        LOGGER.warning(
+            "Failed to persist message snapshot for %s: %s", message.id, exc
+        )
+
+
+async def emit_message_placeholder(message: cl.Message) -> None:
+    try:
+        await message.send()
+    except Exception as exc:  # pragma: no cover - operational path
+        LOGGER.warning(
+            "Failed to send message placeholder for %s: %s", message.id, exc
+        )
+        await persist_message_snapshot(message)
+
+
+async def emit_message_update(message: cl.Message) -> None:
+    try:
+        await message.update()
+    except Exception as exc:  # pragma: no cover - operational path
+        LOGGER.warning("Failed to update message %s: %s", message.id, exc)
+        await persist_message_snapshot(message)
+
+
 async def persist_request_metadata(request_id: str | None, model_name: str) -> None:
     data_layer = get_data_layer()
     if not data_layer:
@@ -130,11 +180,18 @@ async def persist_request_metadata(request_id: str | None, model_name: str) -> N
 
 @cl.password_auth_callback
 async def password_auth_callback(username: str, password: str) -> User | None:
-    if username == SETTINGS.auth.username and password == SETTINGS.auth.password:
+    managed_user = await CONTROL_PLANE_REPOSITORY.get_managed_user(username)
+    if (
+        managed_user
+        and managed_user.get("is_active")
+        and not managed_user.get("is_deleted")
+        and verify_password(password, managed_user.get("password_hash", ""))
+    ):
+        await CONTROL_PLANE_REPOSITORY.touch_managed_user_login(username)
         return User(
             identifier=username,
-            display_name=username,
-            metadata={"role": "acceptance-user"},
+            display_name=managed_user.get("display_name") or username,
+            metadata={"role": "managed-user"},
         )
     return None
 
@@ -206,12 +263,20 @@ if thinking_enabled():
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
+    user = await current_managed_user()
+    if not is_managed_user_active(user):
+        await cl.Message(content="当前用户已被禁用，请联系管理员。").send()
+        return
     cl.user_session.set("selected_model", resolve_model_alias())
     cl.user_session.set("last_request_id", None)
 
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict) -> None:
+    user = await current_managed_user()
+    if not is_managed_user_active(user):
+        await cl.Message(content="当前用户已被禁用，请联系管理员。").send()
+        return
     metadata = parse_thread_metadata(thread)
     selected_model = metadata.get("selected_model")
     if selected_model not in available_models():
@@ -225,12 +290,20 @@ async def on_chat_resume(thread: ThreadDict) -> None:
 async def on_message(message: cl.Message) -> None:
     del message
 
+    user = await current_managed_user()
+    if not is_managed_user_active(user):
+        await cl.Message(content="当前用户已被禁用，请联系管理员。").send()
+        return
+
     model_name = resolve_model_alias()
     user_identifier = current_user_identifier()
     thread_id = context.session.thread_id
     reservation = None
     provider_request_id: str | None = None
     usage = None
+    last_snapshot_at = 0.0
+    snapshot_interval_seconds = 0.75
+    stream_delivery_failed = False
 
     cl.user_session.set("selected_model", model_name)
 
@@ -247,6 +320,7 @@ async def on_message(message: cl.Message) -> None:
             step_id=assistant_message.id,
             messages=llm_messages,
         )
+        await emit_message_placeholder(assistant_message)
 
         stream = await build_client().chat.completions.create(
             model=model_name,
@@ -278,7 +352,19 @@ async def on_message(message: cl.Message) -> None:
 
             token = part.choices[0].delta.content or ""
             if token:
-                await assistant_message.stream_token(token)
+                try:
+                    await assistant_message.stream_token(token)
+                except Exception as exc:  # pragma: no cover - operational path
+                    if not stream_delivery_failed:
+                        LOGGER.warning(
+                            "Streaming token delivery failed for %s: %s",
+                            assistant_message.id,
+                            exc,
+                        )
+                        stream_delivery_failed = True
+                if monotonic() - last_snapshot_at >= snapshot_interval_seconds:
+                    await persist_message_snapshot(assistant_message)
+                    last_snapshot_at = monotonic()
 
         settlement = await QUOTA_SERVICE.settle(
             reservation=reservation,
@@ -290,13 +376,22 @@ async def on_message(message: cl.Message) -> None:
         if provider_request_id:
             cl.user_session.set("last_request_id", provider_request_id)
         await persist_request_metadata(provider_request_id, model_name)
-        await assistant_message.update()
+        await persist_message_snapshot(assistant_message)
+        await emit_message_update(assistant_message)
     except QuotaExceededError as exc:
+        thread_summary = exc.thread_summary
+        if exc.scope == "thread":
+            thread_summary = await QUOTA_SERVICE.mark_thread_blocked(
+                thread_id=thread_id,
+                summary=exc.thread_summary,
+                message=str(exc),
+            )
         await cl.Message(
             content=str(exc),
             metadata=quota_message_metadata(
                 exc.scope,
-                exc.thread_summary.to_metadata_summary(),
+                str(exc),
+                thread_summary.to_metadata_summary(),
                 exc.user_summary.to_api_dict(),
             ),
         ).send()
@@ -312,7 +407,8 @@ async def on_message(message: cl.Message) -> None:
             )
             assistant_message.metadata = {"token_usage": settlement.to_message_metadata()}
             assistant_message.content = f"{assistant_message.content}\n\n{error_message}"
-            await assistant_message.update()
+            await persist_message_snapshot(assistant_message)
+            await emit_message_update(assistant_message)
         else:
             if reservation:
                 await QUOTA_SERVICE.release(reservation, status="released")

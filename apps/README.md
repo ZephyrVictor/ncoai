@@ -4,12 +4,13 @@
 
 `apps/chainlit/`
 
-This directory contains the only user-facing application in the current phase:
+This directory contains the current user-facing application plus the new admin control plane:
 
 1. password login
 2. thread list and resume
 3. streaming chat
 4. LiteLLM-backed model calls
+5. admin control plane
 
 ## Non-goals in this phase
 
