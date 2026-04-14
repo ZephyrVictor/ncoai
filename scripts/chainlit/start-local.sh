@@ -31,7 +31,7 @@ unset DEBUG
 export CHAINLIT_APP_ROOT="$APP_DIR"
 export CHAINLIT_DEBUG="${CHAINLIT_DEBUG:-false}"
 
-if [[ ! -d "$VENDOR_DIR/backend/chainlit/frontend/dist" || ! -d "$VENDOR_DIR/backend/chainlit/copilot/dist" ]] || ! python -c "import chainlit, openai, playwright, redis, requests, tiktoken" >/dev/null 2>&1; then
+if [[ ! -d "$VENDOR_DIR/backend/chainlit/frontend/dist" || ! -d "$VENDOR_DIR/backend/chainlit/copilot/dist" ]] || ! python -c "import chainlit, openai, playwright, prometheus_client, pyftpdlib, redis, requests, tiktoken" >/dev/null 2>&1; then
   echo "[ERROR] Chainlit runtime dependencies or built frontend assets are missing" >&2
   echo "Run: bash scripts/deploy/init-host.sh" >&2
   exit 1

@@ -1,0 +1,11 @@
+{
+  "success": false,
+  "login_ok": true,
+  "stream_ok": false,
+  "stop_ok": false,
+  "thread_switch_ok": false,
+  "screenshots": [],
+  "notes": [
+    "Locator.wait_for: Timeout 90000ms exceeded.\nCall log:\n  - waiting for locator(\"#stop-button\") to be hidden\n    184 × locator resolved to visible <button id=\"stop-button\" data-state=\"closed\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 rounded-full h-8 w-8\">…</button>\n"
+  ]
+}

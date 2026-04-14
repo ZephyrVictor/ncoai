@@ -1,0 +1,77 @@
+{
+  "run_id": "20260412T152348Z-b8b829cd",
+  "started_at": "2026-04-12T15:24:33.102033+00:00",
+  "finished_at": "2026-04-12T15:24:54.213614+00:00",
+  "wall_time_seconds": 21.111581,
+  "target_rps": 0,
+  "actual_average_rps": 0.14210210026430517,
+  "actual_peak_rps": 1,
+  "total_requests": 3,
+  "success_count": 3,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 9047161,
+  "behavior_counts": {
+    "stop": 3
+  },
+  "behavior_success_counts": {
+    "stop": 3
+  },
+  "normal_request_count": 0,
+  "normal_success_count": 0,
+  "normal_success_rate": 0.0,
+  "stop_request_count": 3,
+  "stop_clean_completion_count": 3,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 3,
+  "stop_signal_rate": 1.0,
+  "users_with_successful_normal_chat_count": 0,
+  "users_with_successful_normal_chat_rate": 0.0,
+  "availability_passed": false,
+  "availability_failed_checks": [
+    "normal chat success rate below 99%",
+    "successful normal-chat user coverage below 99%"
+  ],
+  "ttft_ms": {
+    "p50": 394.308,
+    "p90": 637.1927999999999,
+    "p95": 667.5534,
+    "p99": 691.84188
+  },
+  "wall_time_ms": {
+    "p50": 5953.9018780051265,
+    "p90": 6199.973197217332,
+    "p95": 6230.732112118858,
+    "p99": 6255.3392440400785
+  },
+  "generation_duration_ms": {
+    "p50": 5558.703,
+    "p90": 5561.3806,
+    "p95": 5561.7153,
+    "p99": 5561.9830600000005
+  },
+  "output_tps": {
+    "p50": 14.496925132033084,
+    "p90": 14.70069910992574,
+    "p95": 14.726170857162321,
+    "p99": 14.746548254951588
+  },
+  "average_total_tokens": 577.3333333333334,
+  "session_rollover_count": 0,
+  "average_turns_per_session": 3.0,
+  "natural_completion_rate": 0.0,
+  "disturbance_stop_rate": 1.0,
+  "post_stop_next_turn_success_rate": 1.0,
+  "stop_success_rate": 1.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.0,
+  "average_success_requests_before_user_limit": 3.0,
+  "average_tokens_before_user_limit": 1732.0,
+  "users_deleted": 1,
+  "smoke_result": null
+}

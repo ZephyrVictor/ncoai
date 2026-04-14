@@ -12,9 +12,11 @@ from redis.asyncio import Redis
 
 from ncoai_shared.bootstrap import (
     bootstrap_control_plane,
+    bootstrap_team_token_auth_config,
     ensure_application_schema,
     parse_iso_datetime,
     sync_global_quota_policy_cache,
+    sync_team_token_auth_config_cache,
 )
 from ncoai_shared.security import hash_password
 
@@ -97,6 +99,16 @@ async def main() -> int:
             ),
         )
         await sync_global_quota_policy_cache(engine, redis, policy=policy)
+        team_token_config = await bootstrap_team_token_auth_config(
+            engine,
+            public_key_base64=os.getenv("GZCTF_FIXED_GAME_PUBLIC_KEY"),
+            private_key_base64=os.getenv("GZCTF_FIXED_GAME_PRIVATE_KEY"),
+        )
+        await sync_team_token_auth_config_cache(
+            engine,
+            redis,
+            config=team_token_config,
+        )
     finally:
         await redis.close()
         await engine.dispose()

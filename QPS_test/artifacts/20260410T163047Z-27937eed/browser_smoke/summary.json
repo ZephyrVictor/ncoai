@@ -1,0 +1,13 @@
+{
+  "success": false,
+  "login_ok": true,
+  "stream_ok": true,
+  "stop_ok": false,
+  "thread_switch_ok": false,
+  "screenshots": [
+    "01-first-thread.png"
+  ],
+  "notes": [
+    "Locator.wait_for: Timeout 5000ms exceeded.\nCall log:\n  - waiting for get_by_text(\"已停止\") to be visible\n"
+  ]
+}

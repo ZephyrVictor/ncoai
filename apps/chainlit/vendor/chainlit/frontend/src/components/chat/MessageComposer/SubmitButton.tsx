@@ -1,7 +1,6 @@
 import {
   useChatData,
-  useChatInteract,
-  useChatMessages
+  useChatInteract
 } from '@chainlit/react-client';
 
 import { Send } from '@/components/icons/Send';
@@ -24,18 +23,20 @@ export default function SubmitButton({
   disabled,
   onSubmit
 }: SubmitButtonProps) {
-  const { loading } = useChatData();
-  const { firstInteraction } = useChatMessages();
+  const { generation } = useChatData();
   const { stopTask } = useChatInteract();
+  const isGenerating = generation.phase !== 'idle';
+  const isStopping = generation.phase === 'stopping';
 
   return (
     <TooltipProvider>
-      {loading && firstInteraction ? (
+      {isGenerating ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               id="stop-button"
               onClick={stopTask}
+              disabled={isStopping}
               size="icon"
               className="rounded-full h-8 w-8"
             >

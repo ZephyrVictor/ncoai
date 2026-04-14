@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h1>Team Token 公钥配置</h1>
+    </div>
+    <p class="muted">更新后会立即使所有 Chat 已登录用户失效，用户需要重新登录。</p>
+    <div class="readonly-badge">固定 game id: {{ team_token_fixed_game_id if team_token_fixed_game_id > 0 else '-' }}</div>
+    <form id="team-token-auth-form" data-testid="team-token-auth-form" class="stack">
+      <label>
+        当前公钥
+        <textarea
+          id="team-token-public-key"
+          rows="4"
+          required
+          spellcheck="false"
+        >{{ team_token_auth_config.public_key if team_token_auth_config else '' }}</textarea>
+      </label>
+      <button id="team-token-auth-submit" type="submit">保存公钥</button>
+    </form>
+    <div id="team-token-auth-status" class="inline-status" data-testid="team-token-auth-status"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>当前状态</h2>
+    </div>
+    <div class="stack" data-testid="team-token-auth-summary">
+      <div><strong>固定 game id：</strong>{{ team_token_fixed_game_id if team_token_fixed_game_id > 0 else '-' }}</div>
+      <div><strong>配置版本：</strong>{% if team_token_auth_config %}{{ team_token_auth_config.config_version | format_number }}{% else %}-{% endif %}</div>
+      <div><strong>更新时间：</strong>{% if team_token_auth_config %}{{ team_token_auth_config.updated_at | format_datetime }}{% else %}-{% endif %}</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const teamTokenAuthForm = document.getElementById('team-token-auth-form');
+  const teamTokenAuthSubmit = document.getElementById('team-token-auth-submit');
+  const teamTokenAuthStatus = document.getElementById('team-token-auth-status');
+
+  function collectTeamTokenAuthPayload() {
+    return {
+      public_key: document.getElementById('team-token-public-key').value.trim()
+    };
+  }
+
+  teamTokenAuthForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    teamTokenAuthSubmit.disabled = true;
+    teamTokenAuthSubmit.textContent = '保存中...';
+    teamTokenAuthStatus.textContent = '';
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/team-token-auth`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(collectTeamTokenAuthPayload())
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || '保存失败');
+      window.sessionStorage.setItem(
+        'adminFlash',
+        data.changed ? 'Team Token 公钥已更新，Chat 用户需重新登录' : 'Team Token 公钥未变化'
+      );
+      window.location.href = `${window.ADMIN_ROOT_PATH}/team-token-auth`;
+    } catch (error) {
+      teamTokenAuthStatus.textContent = error.message || '保存失败';
+      teamTokenAuthStatus.className = 'inline-status error';
+    } finally {
+      teamTokenAuthSubmit.disabled = false;
+      teamTokenAuthSubmit.textContent = '保存公钥';
+    }
+  });
+</script>
+{% endblock %}

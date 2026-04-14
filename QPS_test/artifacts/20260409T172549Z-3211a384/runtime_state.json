@@ -1,0 +1,8 @@
+{
+  "host_env_path": "/home/ncoai/workspace/llmchat/ncoai/infra/env/host.env",
+  "overrides": {
+    "CHAT_AUTH_MODE": "managed_user",
+    "LITELLM_SET_VERBOSE": "0",
+    "CHAINLIT_QUOTA_DEFAULT_MAX_COMPLETION_TOKENS": "500"
+  }
+}

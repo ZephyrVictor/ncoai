@@ -1,0 +1,75 @@
+{
+  "run_id": "20260412T150810Z-143b94cb",
+  "started_at": "2026-04-12T15:08:55.657634+00:00",
+  "finished_at": "2026-04-12T15:11:04.283429+00:00",
+  "wall_time_seconds": 128.625795,
+  "target_rps": 0,
+  "actual_average_rps": 0.007774490334539817,
+  "actual_peak_rps": 1,
+  "total_requests": 1,
+  "success_count": 1,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 5510482,
+  "behavior_counts": {
+    "normal": 1
+  },
+  "behavior_success_counts": {
+    "normal": 1
+  },
+  "normal_request_count": 1,
+  "normal_success_count": 1,
+  "normal_success_rate": 1.0,
+  "stop_request_count": 0,
+  "stop_clean_completion_count": 0,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 1,
+  "users_with_successful_normal_chat_rate": 1.0,
+  "availability_passed": true,
+  "availability_failed_checks": [],
+  "ttft_ms": {
+    "p50": 96438.723,
+    "p90": 96438.723,
+    "p95": 96438.723,
+    "p99": 96438.723
+  },
+  "wall_time_ms": {
+    "p50": 124990.07565999636,
+    "p90": 124990.07565999636,
+    "p95": 124990.07565999636,
+    "p99": 124990.07565999636
+  },
+  "generation_duration_ms": {
+    "p50": 28550.194,
+    "p90": 28550.194,
+    "p95": 28550.194,
+    "p99": 28550.194
+  },
+  "output_tps": {
+    "p50": 13.80025648862491,
+    "p90": 13.80025648862491,
+    "p95": 13.80025648862491,
+    "p99": 13.80025648862491
+  },
+  "average_total_tokens": 613.0,
+  "session_rollover_count": 0,
+  "average_turns_per_session": 1.0,
+  "natural_completion_rate": 1.0,
+  "disturbance_stop_rate": 0.0,
+  "post_stop_next_turn_success_rate": 1.0,
+  "stop_success_rate": 0.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.0,
+  "average_success_requests_before_user_limit": 1.0,
+  "average_tokens_before_user_limit": 613.0,
+  "users_deleted": 1,
+  "smoke_result": null,
+  "abort_reason": "litellm health failed 3 times: service health check failed"
+}

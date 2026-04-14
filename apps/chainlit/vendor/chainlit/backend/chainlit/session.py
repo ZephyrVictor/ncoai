@@ -51,6 +51,8 @@ class BaseSession:
     thread_id_to_resume: Optional[str] = None
     client_type: ClientType
     current_task: Optional[asyncio.Task] = None
+    stop_requested: bool = False
+    active_generation_assistant_message_id: Optional[str] = None
 
     def __init__(
         self,
@@ -80,6 +82,8 @@ class BaseSession:
         self.user_env = user_env or {}
         self.environ = environ or {}
         self.chat_profile = chat_profile
+        self.stop_requested = False
+        self.active_generation_assistant_message_id = None
 
         self.files: Dict[str, FileDict] = {}
         self.files_spec: Dict[str, AskFileSpec] = {}

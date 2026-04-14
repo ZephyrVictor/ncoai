@@ -8,6 +8,8 @@ import {
   type IStep
 } from '@chainlit/react-client';
 
+import { Loader } from '@/components/Loader';
+import { useTranslation } from 'components/i18n/Translator';
 import { useLayoutMaxWidth } from 'hooks/useLayoutMaxWidth';
 import { formatTokenCount, hasTokenUsageMetadata } from '@/lib/quota';
 
@@ -31,6 +33,7 @@ interface Props {
 }
 
 const EMPTY_ELEMENTS: IMessageElement[] = [];
+type GenerationStatus = 'pending' | 'stopping' | 'stopped' | undefined;
 
 const Message = memo(
   ({
@@ -44,6 +47,7 @@ const Message = memo(
   }: Props) => {
     const { allowHtml, cot, latex, renderUserMarkdown, onError } =
       useContext(MessageContext);
+    const { t } = useTranslation();
     const layoutMaxWidth = useLayoutMaxWidth();
     const contentRef = useRef<HTMLDivElement>(null);
     const isUserMessage = message.type === 'user_message';
@@ -60,6 +64,12 @@ const Message = memo(
     const tokenUsage = hasTokenUsageMetadata(message.metadata?.token_usage)
       ? message.metadata?.token_usage
       : undefined;
+    const generationStatus = message.metadata
+      ?.generation_status as GenerationStatus;
+    const shouldShowAssistantStatus =
+      !isStep &&
+      !!generationStatus &&
+      (generationStatus !== 'pending' || !message.output);
 
     const userMessageContent = useMemo(
       () => (
@@ -73,6 +83,28 @@ const Message = memo(
       ),
       [message, allowHtml, latex]
     );
+
+    const assistantStatus = useMemo(() => {
+      switch (generationStatus) {
+        case 'pending':
+          return {
+            label: t('chat.messages.status.pendingResponse'),
+            loading: true
+          };
+        case 'stopping':
+          return {
+            label: t('chat.messages.status.stoppingResponse'),
+            loading: false
+          };
+        case 'stopped':
+          return {
+            label: t('chat.messages.status.stoppedResponse'),
+            loading: false
+          };
+        default:
+          return undefined;
+      }
+    }, [generationStatus, t]);
 
     if (skip) {
       if (!message.steps) {
@@ -170,6 +202,12 @@ const Message = memo(
                         latex={latex}
                         renderMarkdown={true}
                       />
+                      {shouldShowAssistantStatus && assistantStatus ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          {assistantStatus.loading ? <Loader /> : null}
+                          <span>{assistantStatus.label}</span>
+                        </div>
+                      ) : null}
                       {tokenUsage ? (
                         <div className="text-xs text-muted-foreground">
                           本次 {formatTokenCount(tokenUsage.request_tokens)} tok ·

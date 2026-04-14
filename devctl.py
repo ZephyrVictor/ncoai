@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import selectors
 import shlex
 import shutil
 import signal
@@ -12,9 +13,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / "infra" / "env" / ".env.dev"
@@ -29,6 +32,8 @@ LOG_DIR = STATE_DIR / "logs"
 TMUX_SESSION = "ncoai-dev"
 DEFAULT_START_ORDER = ("vllm", "litellm", "chainlit", "admin")
 DEFAULT_STOP_ORDER = tuple(reversed(DEFAULT_START_ORDER))
+LOG_RETENTION_TIMEZONE = ZoneInfo("Asia/Shanghai")
+LOG_RELAY_POLL_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +62,7 @@ SERVICES: dict[str, ServiceDefinition] = {
     "litellm": ServiceDefinition(
         name="litellm",
         script_relpath="scripts/litellm/start-local.sh",
-        final_markers=("infra/litellm/config.yaml", "litellm"),
+        final_markers=(str(ROOT / ".local" / "generated" / "litellm.config.yaml"), "litellm"),
         readiness_timeout_seconds=180.0,
     ),
     "chainlit": ServiceDefinition(
@@ -147,6 +152,87 @@ def service_state_path(service: str) -> Path:
 
 def service_log_path(service: str) -> Path:
     return LOG_DIR / f"{service}.log"
+
+
+def service_log_day_path(service: str) -> Path:
+    return LOG_DIR / f"{service}.day"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def log_day_for_instant(instant: datetime, *, tz: ZoneInfo = LOG_RETENTION_TIMEZONE) -> str:
+    return instant.astimezone(tz).date().isoformat()
+
+
+class DailyLogWriter:
+    def __init__(
+        self,
+        *,
+        log_path: Path,
+        day_path: Path,
+        tz: ZoneInfo = LOG_RETENTION_TIMEZONE,
+    ) -> None:
+        self.log_path = log_path
+        self.day_path = day_path
+        self.tz = tz
+        self._handle: Any | None = None
+        self._current_day: str | None = None
+
+    def _stored_day(self) -> str | None:
+        if self._current_day:
+            return self._current_day
+
+        if self.day_path.exists():
+            value = self.day_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+
+        if self.log_path.exists():
+            stat = self.log_path.stat()
+            modified_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            return log_day_for_instant(modified_at, tz=self.tz)
+
+        return None
+
+    def rotate_if_needed(self, instant: datetime | None = None) -> bool:
+        now = instant or utcnow()
+        current_day = log_day_for_instant(now, tz=self.tz)
+        if self._handle is not None and self._current_day == current_day:
+            return False
+
+        stored_day = self._stored_day()
+        mode = "ab" if stored_day == current_day and self.log_path.exists() else "wb"
+
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._handle is not None:
+            self._handle.close()
+        self._handle = self.log_path.open(mode)
+        self._current_day = current_day
+        self.day_path.write_text(current_day, encoding="utf-8")
+        return True
+
+    def write(self, data: bytes, *, instant: datetime | None = None) -> None:
+        self.rotate_if_needed(instant)
+        assert self._handle is not None
+        self._handle.write(data)
+        self._handle.flush()
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+
+def write_stdout_bytes(data: bytes) -> None:
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(data)
+        buffer.flush()
+        return
+    sys.stdout.write(data.decode("utf-8", errors="replace"))
+    sys.stdout.flush()
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -268,8 +354,8 @@ def service_readiness_urls(service: str, env: dict[str, str]) -> list[str]:
     if service == "litellm":
         port = env.get("LITELLM_PORT", "33455")
         return [
-            f"http://127.0.0.1:{port}/health/liveliness",
-            f"http://127.0.0.1:{port}/metrics",
+            f"http://127.0.0.1:{port}/health",
+            f"http://127.0.0.1:{port}/v1/models",
         ]
     if service == "chainlit":
         port = env.get("CHAINLIT_PORT", "3100")
@@ -280,6 +366,12 @@ def service_readiness_urls(service: str, env: dict[str, str]) -> list[str]:
         root_path = env.get("ADMIN_APP_ROOT_PATH", "/admin").rstrip("/")
         return [f"http://127.0.0.1:{port}{root_path}/healthz"]
     return []
+
+
+def should_wait_for_readiness(env: dict[str, str] | None = None) -> bool:
+    values = env or load_env("host")
+    raw = values.get("DEVCTL_WAIT_FOR_READINESS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def wait_for_service_readiness(service: str) -> bool:
@@ -405,9 +497,88 @@ def record_start(service: str, pid: int, pgid: int, tmux_target: str | None) -> 
     write_json(service_state_path(service), payload)
 
 
-def build_tmux_command(service: str) -> str:
+def run_service_with_log_relay(
+    service: str,
+    tmux_target: str | None,
+    *,
+    poll_interval_seconds: float = LOG_RELAY_POLL_INTERVAL_SECONDS,
+) -> int:
+    ensure_runtime_dirs()
     definition = SERVICES[service]
-    log_path = service_log_path(service)
+    writer = DailyLogWriter(
+        log_path=service_log_path(service),
+        day_path=service_log_day_path(service),
+    )
+    writer.rotate_if_needed()
+
+    proc = subprocess.Popen(
+        ["bash", str(definition.script_path)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    record_start(service, proc.pid, proc.pid, tmux_target)
+
+    start_line = (
+        f"\n=== START {service} "
+        f"{datetime.now(LOG_RETENTION_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S %z')} ===\n"
+    ).encode("utf-8")
+    write_stdout_bytes(start_line)
+    writer.write(start_line)
+
+    stdout = proc.stdout
+    if stdout is None:
+        writer.close()
+        return proc.wait()
+
+    selector = selectors.DefaultSelector()
+    selector.register(stdout, selectors.EVENT_READ)
+    stdout_open = True
+    original_handlers: dict[int, Any] = {}
+
+    def forward_signal(signum: int, _frame: Any) -> None:
+        try:
+            os.killpg(proc.pid, signum)
+        except ProcessLookupError:
+            return
+
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            original_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, forward_signal)
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    try:
+        while stdout_open or proc.poll() is None:
+            writer.rotate_if_needed()
+            events = selector.select(timeout=poll_interval_seconds if stdout_open else 0.0)
+            if not events:
+                continue
+
+            for key, _mask in events:
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    stdout_open = False
+                    continue
+                write_stdout_bytes(chunk)
+                writer.write(chunk)
+    finally:
+        selector.close()
+        stdout.close()
+        writer.close()
+        for signum, handler in original_handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+    return proc.wait()
+
+
+def build_tmux_command(service: str) -> str:
     state_path = service_state_path(service)
     tmux_target = f"{TMUX_SESSION}:{service}"
     return "bash -lc " + shlex.quote(
@@ -418,15 +589,11 @@ def build_tmux_command(service: str) -> str:
                 env_source_snippet("host"),
                 "source .venv/bin/activate",
                 f"export PYTHONPATH={shlex.quote(str(ROOT))}:${{PYTHONPATH:-}}",
-                f"exec > >(tee -a {shlex.quote(str(log_path))}) 2>&1",
-                f"echo; printf '=== START {service} %s ===\\n' \"$(date '+%Y-%m-%d %H:%M:%S')\"",
                 f"rm -f {shlex.quote(str(state_path))}",
                 (
-                    f"python3 {shlex.quote(str(ROOT / 'devctl.py'))} _record-start "
-                    f"{shlex.quote(service)} $$ \"$(ps -o pgid= $$ | tr -d ' ')\" "
-                    f"{shlex.quote(tmux_target)}"
+                    f"exec python3 {shlex.quote(str(ROOT / 'devctl.py'))} _run-service "
+                    f"{shlex.quote(service)} {shlex.quote(tmux_target)}"
                 ),
-                f"exec bash {shlex.quote(str(definition.script_path))}",
             ]
         )
     )
@@ -465,13 +632,23 @@ def start_service(service: str) -> int:
     while time.time() < deadline:
         state = load_running_state(service)
         if state:
+            env = load_env("host")
+            if not should_wait_for_readiness(env):
+                print(
+                    f"[OK] Started {service} "
+                    f"(pid={state['pid']}, tmux={state.get('tmux_target') or '-'})"
+                )
+                return 0
             if wait_for_service_readiness(service):
                 print(
                     f"[OK] Started {service} "
                     f"(pid={state['pid']}, tmux={state.get('tmux_target') or '-'})"
                 )
                 return 0
-            print(f"[ERROR] {service} process started but did not become ready.", file=sys.stderr)
+            print(
+                f"[ERROR] {service} process started but did not become ready.",
+                file=sys.stderr,
+            )
             stop_service(service)
             break
         time.sleep(0.2)
@@ -537,13 +714,13 @@ def status_service(service: str) -> int:
 
 
 def print_logs(service: str) -> int:
-    if session_exists() and service in list_windows():
-        proc = tmux_run(["capture-pane", "-p", "-t", f"{TMUX_SESSION}:{service}"], check=False)
-        if proc.returncode == 0 and proc.stdout:
-            print(proc.stdout, end="")
-            return 0
     log_path = service_log_path(service)
     if not log_path.exists():
+        if session_exists() and service in list_windows():
+            proc = tmux_run(["capture-pane", "-p", "-t", f"{TMUX_SESSION}:{service}"], check=False)
+            if proc.returncode == 0 and proc.stdout:
+                print(proc.stdout, end="")
+                return 0
         print(f"[INFO] No log file for {service}: {log_path}")
         return 0
     print(tail_text(log_path), end="")
@@ -708,6 +885,10 @@ def parse_args() -> argparse.Namespace:
     p_record.add_argument("pgid", type=int)
     p_record.add_argument("tmux_target")
 
+    p_run_service = sub.add_parser("_run-service", help=argparse.SUPPRESS)
+    p_run_service.add_argument("service", choices=SERVICE_NAMES)
+    p_run_service.add_argument("tmux_target")
+
     return parser.parse_args()
 
 
@@ -730,6 +911,8 @@ def main() -> int:
     if args.cmd == "_record-start":
         record_start(args.service, args.pid, args.pgid, args.tmux_target)
         return 0
+    if args.cmd == "_run-service":
+        return run_service_with_log_relay(args.service, args.tmux_target)
     return 1
 
 

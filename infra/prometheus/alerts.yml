@@ -1,0 +1,119 @@
+groups:
+  - name: ncoai-infra
+    rules:
+      - alert: HostHighCPUUsage
+        expr: 100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host CPU usage is above 90%.
+          description: The single-node host has sustained high CPU usage for 10 minutes.
+
+      - alert: HostHighMemoryUsage
+        expr: 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host memory usage is above 90%.
+          description: The single-node host has sustained high memory usage for 10 minutes.
+
+      - alert: HostDiskUsageHigh
+        expr: 100 * (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"})) > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root filesystem usage is above 90%.
+          description: The deployment host root filesystem is close to full.
+
+      - alert: PostgreSQLDown
+        expr: pg_up != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL exporter cannot reach PostgreSQL.
+          description: PostgreSQL is unavailable or the exporter cannot connect.
+
+      - alert: RedisDown
+        expr: redis_up != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis exporter cannot reach Redis.
+          description: Redis is unavailable or the exporter cannot connect.
+
+      - alert: ChainlitHealthCheckFailed
+        expr: probe_success{job="host-service-health",instance=~".*/chat/health"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Chainlit health check failed.
+          description: Prometheus blackbox health checks are failing for Chainlit.
+
+      - alert: AdminHealthCheckFailed
+        expr: probe_success{job="host-service-health",instance=~".*/admin/healthz"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Admin health check failed.
+          description: Prometheus blackbox health checks are failing for the admin app.
+
+      - alert: LiteLLMUnavailable
+        expr: up{job="litellm-metrics"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: LiteLLM metrics endpoint is unavailable.
+          description: Prometheus cannot scrape LiteLLM metrics.
+
+      - alert: VLLMUnavailable
+        expr: up{job="vllm-metrics"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: vLLM metrics endpoint is unavailable.
+          description: Prometheus cannot scrape vLLM metrics.
+
+      - alert: VLLMBackupUnavailable
+        expr: ncoai_vllm_redundancy_enabled{app="admin",service="vllm"} == 1 and ncoai_vllm_redundancy_endpoint_health{app="admin",service="vllm",endpoint="backup"} != 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: The backup vLLM node is unavailable.
+          description: Admin redundancy monitoring cannot reach the configured backup vLLM endpoint.
+
+      - alert: VLLMFailedOver
+        expr: ncoai_vllm_redundancy_mode{app="admin",service="vllm",mode="failed_over"} == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: vLLM traffic is running on the backup node.
+          description: The local vLLM node is unhealthy and the system is currently relying on the backup node.
+
+      - alert: VLLMRestartBudgetExhausted
+        expr: ncoai_vllm_redundancy_restart_budget_exhausted{app="admin",service="vllm"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Automatic vLLM restart budget has been exhausted.
+          description: Admin redundancy monitoring has paused automatic local vLLM restarts because the retry budget is exhausted.
+
+      - alert: ScrapeTargetDown
+        expr: up{job=~"admin-metrics|chainlit-metrics|node-exporter|postgres-exporter|redis-exporter"} != 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: A critical scrape target is down.
+          description: Prometheus cannot scrape one of the app or exporter targets.

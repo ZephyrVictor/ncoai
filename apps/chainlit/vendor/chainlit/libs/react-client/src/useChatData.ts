@@ -8,6 +8,7 @@ import {
   chatSettingsInputsState,
   chatSettingsValueState,
   elementState,
+  generationState,
   loadingState,
   sessionState,
   tasklistState
@@ -22,6 +23,7 @@ export interface IToken {
 
 const useChatData = () => {
   const loading = useRecoilValue(loadingState);
+  const generation = useRecoilValue(generationState);
   const elements = useRecoilValue(elementState);
   const tasklists = useRecoilValue(tasklistState);
   const actions = useRecoilValue(actionState);
@@ -35,9 +37,10 @@ const useChatData = () => {
   );
 
   const connected = session?.socket.connected && !session?.error;
+  const isGenerating = generation.phase !== 'idle';
   const disabled =
     !connected ||
-    loading ||
+    isGenerating ||
     askUser?.spec.type === 'file' ||
     askUser?.spec.type === 'action' ||
     askUser?.spec.type === 'element';
@@ -53,6 +56,8 @@ const useChatData = () => {
     disabled,
     elements,
     error: session?.error,
+    generation,
+    isGenerating,
     loading,
     tasklists
   };

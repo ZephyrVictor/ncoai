@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h1>vLLM 冗余状态</h1>
+      <p class="muted">查看主备节点状态、自动重启结果和最近切换事件。</p>
+    </div>
+    <div class="actions">
+      <button id="vllm-redundancy-ping" type="button">手动探测</button>
+    </div>
+  </div>
+  <div class="muted">更新时间：{{ vllm_redundancy.generated_at | format_datetime }}</div>
+  {% if vllm_redundancy.config_error %}
+  <div class="inline-status error" style="margin-top: 14px;">{{ vllm_redundancy.config_error }}</div>
+  {% endif %}
+</section>
+
+<section class="ops-grid">
+  <article class="panel stat-card">
+    <div class="stat-label">当前模式</div>
+    <div class="stat-value stat-value--compact">{{ vllm_redundancy.mode }}</div>
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">本机主节点</div>
+    <div class="status-row">
+      <span class="status-chip status-{{ 'up' if vllm_redundancy.primary.healthy else 'down' }}">
+        {{ 'healthy' if vllm_redundancy.primary.healthy else 'down' }}
+      </span>
+    </div>
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">备用节点</div>
+    {% if vllm_redundancy.backup.configured %}
+    <div class="status-row">
+      {% set backup_status = 'up' if vllm_redundancy.backup.healthy else 'down' %}
+      <span class="status-chip status-{{ backup_status }}">
+        {{ 'healthy' if vllm_redundancy.backup.healthy else 'down' }}
+      </span>
+    </div>
+    {% else %}
+    <div class="status-row">
+      <span class="status-chip status-disabled">not-configured</span>
+    </div>
+    {% endif %}
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">自动重启预算</div>
+    <div class="status-row">
+      <span class="status-chip status-{{ 'down' if vllm_redundancy.restart_budget.exhausted else 'up' }}">
+        {{ vllm_redundancy.restart_budget.attempts_in_window }}/{{ vllm_redundancy.restart_budget.max_attempts }}
+      </span>
+    </div>
+  </article>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>节点配置</h2>
+    </div>
+    <div class="kv-grid">
+      <div>
+        <div class="muted">冗余开关</div>
+        <strong>{{ 'enabled' if vllm_redundancy.config.failover_enabled else 'disabled' }}</strong>
+      </div>
+      <div>
+        <div class="muted">主节点 Origin</div>
+        <strong>{{ vllm_redundancy.config.primary_origin }}</strong>
+      </div>
+      <div>
+        <div class="muted">主节点 API Base</div>
+        <strong>{{ vllm_redundancy.config.primary_api_base }}</strong>
+      </div>
+      <div>
+        <div class="muted">备用节点 Origin</div>
+        <strong>{{ vllm_redundancy.config.backup_origin or '-' }}</strong>
+      </div>
+      <div>
+        <div class="muted">备用节点 API Base</div>
+        <strong>{{ vllm_redundancy.config.backup_api_base or '-' }}</strong>
+      </div>
+      <div>
+        <div class="muted">请求超时</div>
+        <strong>主 {{ vllm_redundancy.config.primary_request_timeout_seconds }}s / 备 {{ vllm_redundancy.config.backup_request_timeout_seconds }}s</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>本机主节点</h2>
+    </div>
+    <div class="status-list">
+      <div class="status-item">
+        <div>
+          <strong>进程状态</strong>
+          <div class="muted">
+            {% if vllm_redundancy.primary.pid %}
+            PID={{ vllm_redundancy.primary.pid }}
+            {% else %}
+            未发现运行中的 vLLM 进程
+            {% endif %}
+          </div>
+        </div>
+        <span class="status-chip status-{{ 'up' if vllm_redundancy.primary.process_running else 'down' }}">
+          {{ 'running' if vllm_redundancy.primary.process_running else 'missing' }}
+        </span>
+      </div>
+      <div class="status-item">
+        <div>
+          <strong>HTTP 健康检查</strong>
+          <div class="muted">{{ vllm_redundancy.primary.health_url }}</div>
+        </div>
+        <span class="status-chip status-{{ 'up' if vllm_redundancy.primary.healthy else 'down' }}">
+          {{ 'healthy' if vllm_redundancy.primary.healthy else 'down' }}
+        </span>
+      </div>
+      <div class="status-item">
+        <div>
+          <strong>模型列表检查</strong>
+          <div class="muted">{{ vllm_redundancy.primary.models_url }}</div>
+        </div>
+        <span class="status-chip status-{{ 'up' if vllm_redundancy.primary.healthy else 'down' }}">
+          {{ 'ok' if vllm_redundancy.primary.healthy else 'failed' }}
+        </span>
+      </div>
+    </div>
+    {% if vllm_redundancy.primary.last_error %}
+    <div class="inline-status error" style="margin-top: 14px;">{{ vllm_redundancy.primary.last_error }}</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>备用节点</h2>
+    </div>
+    {% if vllm_redundancy.backup.configured %}
+    <div class="status-list">
+      <div class="status-item">
+        <div>
+          <strong>HTTP 健康检查</strong>
+          <div class="muted">{{ vllm_redundancy.backup.health_url }}</div>
+        </div>
+        <span class="status-chip status-{{ 'up' if vllm_redundancy.backup.healthy else 'down' }}">
+          {{ 'healthy' if vllm_redundancy.backup.healthy else 'down' }}
+        </span>
+      </div>
+      <div class="status-item">
+        <div>
+          <strong>模型列表检查</strong>
+          <div class="muted">{{ vllm_redundancy.backup.models_url }}</div>
+        </div>
+        <span class="status-chip status-{{ 'up' if vllm_redundancy.backup.healthy else 'down' }}">
+          {{ 'ok' if vllm_redundancy.backup.healthy else 'failed' }}
+        </span>
+      </div>
+    </div>
+    {% if vllm_redundancy.backup.last_error %}
+    <div class="inline-status error" style="margin-top: 14px;">{{ vllm_redundancy.backup.last_error }}</div>
+    {% endif %}
+    {% else %}
+    <div class="inline-status success">当前没有配置备用节点。</div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>自动重启</h2>
+    </div>
+    <div class="kv-grid">
+      <div>
+        <div class="muted">最近结果</div>
+        <strong>{{ vllm_redundancy.last_restart.status }}</strong>
+      </div>
+      <div>
+        <div class="muted">最近尝试时间</div>
+        <strong>{{ vllm_redundancy.last_restart.attempted_at | format_datetime }}</strong>
+      </div>
+      <div>
+        <div class="muted">完成时间</div>
+        <strong>{{ vllm_redundancy.last_restart.completed_at | format_datetime }}</strong>
+      </div>
+      <div>
+        <div class="muted">下次允许重启</div>
+        <strong>{{ vllm_redundancy.restart_budget.next_allowed_at | format_datetime }}</strong>
+      </div>
+    </div>
+    {% if vllm_redundancy.last_restart.detail %}
+    <pre class="detail-pre">{{ vllm_redundancy.last_restart.detail }}</pre>
+    {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>最近事件</h2>
+  </div>
+  {% if vllm_redundancy.events %}
+  <div class="log-lines">
+    {% for item in vllm_redundancy.events %}
+    <div class="log-line">
+      <div class="log-meta">
+        <span>{{ item.timestamp | format_datetime }}</span>
+        <span>{{ item.level }}</span>
+        <span>{{ item.event }}</span>
+      </div>
+      <pre>{{ item.message }}</pre>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="inline-status success">还没有记录到冗余切换或自动重启事件。</div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const pingButton = document.getElementById('vllm-redundancy-ping');
+  if (pingButton) {
+    pingButton.addEventListener('click', async () => {
+      pingButton.disabled = true;
+      try {
+        const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/vllm-redundancy/ping`, {
+          method: 'POST',
+          credentials: 'same-origin'
+        });
+        if (!response.ok) {
+          throw new Error('ping failed');
+        }
+        window.location.reload();
+      } catch (_error) {
+        renderFlash('手动探测失败，请稍后重试。', 'error');
+        pingButton.disabled = false;
+      }
+    });
+  }
+</script>
+{% endblock %}

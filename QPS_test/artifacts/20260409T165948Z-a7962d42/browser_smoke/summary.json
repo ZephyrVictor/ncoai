@@ -1,0 +1,13 @@
+{
+  "success": false,
+  "login_ok": true,
+  "stream_ok": true,
+  "stop_ok": false,
+  "thread_switch_ok": false,
+  "screenshots": [
+    "01-first-thread.png"
+  ],
+  "notes": [
+    "Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"#stop-button\")\n"
+  ]
+}

@@ -9,6 +9,8 @@ The deployment now uses two compose entrypoints:
 - `observability.yml`
   - `prometheus`
   - `grafana`
+  - `loki`
+  - `promtail`
   - `node-exporter`
   - `postgres-exporter`
   - `redis-exporter`

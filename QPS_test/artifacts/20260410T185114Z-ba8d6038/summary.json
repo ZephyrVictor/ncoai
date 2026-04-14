@@ -1,0 +1,70 @@
+{
+  "run_id": "20260410T185114Z-ba8d6038",
+  "started_at": "2026-04-10T18:52:40.726715+00:00",
+  "finished_at": "2026-04-10T18:53:09.994329+00:00",
+  "wall_time_seconds": 29.267614,
+  "target_rps": 1,
+  "actual_average_rps": 0.06833491790618805,
+  "actual_peak_rps": 1,
+  "total_requests": 2,
+  "success_count": 2,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 44432330,
+  "behavior_counts": {
+    "normal": 2
+  },
+  "behavior_success_counts": {
+    "normal": 2
+  },
+  "normal_request_count": 2,
+  "normal_success_count": 2,
+  "normal_success_rate": 1.0,
+  "stop_request_count": 0,
+  "stop_clean_completion_count": 0,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 1,
+  "users_with_successful_normal_chat_rate": 1.0,
+  "availability_passed": true,
+  "availability_failed_checks": [],
+  "ttft_ms": {
+    "p50": 307.3815,
+    "p90": 308.47069999999997,
+    "p95": 308.60685,
+    "p99": 308.71577
+  },
+  "wall_time_ms": {
+    "p50": 13945.186437998927,
+    "p90": 14533.665837199806,
+    "p95": 14607.225762099915,
+    "p99": 14666.073702020003
+  },
+  "average_total_tokens": 431.5,
+  "stop_success_rate": 0.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.0,
+  "average_success_requests_before_user_limit": 2.0,
+  "average_tokens_before_user_limit": 863.0,
+  "users_deleted": 1,
+  "smoke_result": {
+    "success": false,
+    "login_ok": true,
+    "stream_ok": true,
+    "stop_ok": false,
+    "thread_switch_ok": false,
+    "screenshots": [
+      "01-first-thread.png"
+    ],
+    "notes": [
+      "Locator.wait_for: Timeout 5000ms exceeded.\nCall log:\n  - waiting for get_by_text(\"已停止\") to be visible\n"
+    ]
+  },
+  "abort_reason": "duration reached (20.0s)"
+}

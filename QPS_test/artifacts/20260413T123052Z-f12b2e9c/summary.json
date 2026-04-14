@@ -1,0 +1,82 @@
+{
+  "run_id": "20260413T123052Z-f12b2e9c",
+  "started_at": "2026-04-13T12:38:05.010939+00:00",
+  "finished_at": "2026-04-13T12:40:17.779495+00:00",
+  "wall_time_seconds": 132.768556,
+  "target_rps": 120,
+  "actual_average_rps": 8.20224330827248,
+  "actual_peak_rps": 71,
+  "total_requests": 1089,
+  "success_count": 1052,
+  "failure_count": 37,
+  "failure_type_counts": {
+    "assistant_error": 37
+  },
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 52002524,
+  "behavior_counts": {
+    "normal": 1038,
+    "stop": 51
+  },
+  "behavior_success_counts": {
+    "normal": 1003,
+    "stop": 49
+  },
+  "normal_request_count": 1038,
+  "normal_success_count": 1003,
+  "normal_success_rate": 0.9662813102119461,
+  "stop_request_count": 51,
+  "stop_clean_completion_count": 51,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 75,
+  "users_with_successful_normal_chat_rate": 0.9375,
+  "availability_passed": false,
+  "availability_failed_checks": [
+    "normal chat success rate below 99%",
+    "successful normal-chat user coverage below 99%"
+  ],
+  "ttft_ms": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "wall_time_ms": {
+    "p50": 865.2535769797396,
+    "p90": 1373.4127897012513,
+    "p95": 1656.2929463427279,
+    "p99": 2223.1435799546307
+  },
+  "generation_duration_ms": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "output_tps": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "average_total_tokens": 0.0,
+  "session_rollover_count": 32,
+  "average_turns_per_session": 9.723214285714286,
+  "natural_completion_rate": 1.0,
+  "disturbance_stop_rate": 0.0,
+  "post_stop_next_turn_success_rate": 1.0,
+  "stop_success_rate": 0.9607843137254902,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.4,
+  "average_success_requests_before_user_limit": 13.15,
+  "average_tokens_before_user_limit": 0.0,
+  "users_deleted": 80,
+  "smoke_result": null,
+  "abort_reason": "litellm health failed 3 times: service health check failed"
+}

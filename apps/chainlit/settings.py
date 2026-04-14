@@ -30,9 +30,26 @@ def build_redis_url() -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabasePoolSettings:
+    size: int
+    max_overflow: int
+    timeout_seconds: float
+    recycle_seconds: int
+    pre_ping: bool
+    use_lifo: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DataCacheSettings:
+    enabled: bool
+    ttl_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
 class DatabaseSettings:
     url: str
     async_url: str
+    pool: DatabasePoolSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +62,19 @@ class LiteLLMSettings:
     base_url: str
     api_key: str
     timeout_seconds: float
+    max_retries: int
+    max_connections: int
+    max_keepalive_connections: int
+    max_concurrent_requests: int
+    queue_timeout_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
 class ModelSettings:
     default_model: str
+    default_model_display_name: str
     thinking_model: str
+    thinking_model_display_name: str
     max_model_len: int
     system_prompt: str
     thinking_enabled: bool
@@ -79,14 +103,55 @@ class QuotaSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class TeamTokenAuthSettings:
+    mode: str
+    fixed_game_id: int
+    fixed_game_public_key: str
+    fixed_game_private_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class CapsSettings:
+    enabled: bool
+    storage_root: str
+    ftp_host: str
+    ftp_port: int
+    ftp_username: str
+    ftp_password: str
+    ftp_passive_port_start: int
+    ftp_passive_port_end: int
+    ftp_public_host: str | None
+    ftp_tls_enabled: bool
+    ftp_tls_certfile: str | None
+    ftp_tls_keyfile: str | None
+    ftp_tls_control_required: bool
+    ftp_tls_data_required: bool
+
+    @property
+    def passive_ports(self) -> tuple[int, ...]:
+        start = self.ftp_passive_port_start
+        end = self.ftp_passive_port_end
+        if start <= 0 or end <= 0 or start > 65535 or end > 65535:
+            raise ValueError("CAPS FTP passive port range must use valid TCP ports")
+        if end < start:
+            raise ValueError(
+                "CAPS_FTP_PASSIVE_PORT_END must be greater than or equal to CAPS_FTP_PASSIVE_PORT_START"
+            )
+        return tuple(range(start, end + 1))
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     database: DatabaseSettings
+    data_cache: DataCacheSettings
     redis: RedisSettings
     litellm: LiteLLMSettings
     models: ModelSettings
     auth: AuthSettings
     admin: AdminSettings
     quota: QuotaSettings
+    team_token_auth: TeamTokenAuthSettings
+    caps: CapsSettings
     chainlit_root_path: str
 
 
@@ -99,6 +164,22 @@ def load_settings() -> AppSettings:
         database=DatabaseSettings(
             url=database_url,
             async_url=normalize_postgres_url(database_url),
+            pool=DatabasePoolSettings(
+                size=int(os.getenv("CHAINLIT_DB_POOL_SIZE", "128")),
+                max_overflow=int(os.getenv("CHAINLIT_DB_MAX_OVERFLOW", "64")),
+                timeout_seconds=float(
+                    os.getenv("CHAINLIT_DB_POOL_TIMEOUT_SECONDS", "15")
+                ),
+                recycle_seconds=int(
+                    os.getenv("CHAINLIT_DB_POOL_RECYCLE_SECONDS", "1800")
+                ),
+                pre_ping=env_flag("CHAINLIT_DB_POOL_PRE_PING", True),
+                use_lifo=env_flag("CHAINLIT_DB_POOL_USE_LIFO", True),
+            ),
+        ),
+        data_cache=DataCacheSettings(
+            enabled=env_flag("CHAINLIT_DATA_CACHE_ENABLED", True),
+            ttl_seconds=int(os.getenv("CHAINLIT_DATA_CACHE_TTL_SECONDS", "15")),
         ),
         redis=RedisSettings(url=build_redis_url()),
         litellm=LiteLLMSettings(
@@ -111,11 +192,41 @@ def load_settings() -> AppSettings:
                 os.getenv("LITELLM_MASTER_KEY", "sk-local-dev"),
             ),
             timeout_seconds=float(os.getenv("CHAINLIT_OPENAI_TIMEOUT", "180")),
+            max_retries=max(int(os.getenv("CHAINLIT_OPENAI_MAX_RETRIES", "0")), 0),
+            max_connections=max(
+                int(os.getenv("CHAINLIT_OPENAI_MAX_CONNECTIONS", "256")),
+                1,
+            ),
+            max_keepalive_connections=max(
+                int(
+                    os.getenv(
+                        "CHAINLIT_OPENAI_MAX_KEEPALIVE_CONNECTIONS",
+                        "128",
+                    )
+                ),
+                1,
+            ),
+            max_concurrent_requests=max(
+                int(os.getenv("CHAINLIT_LITELLM_MAX_CONCURRENT_REQUESTS", "160")),
+                1,
+            ),
+            queue_timeout_seconds=max(
+                float(os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "8")),
+                0.1,
+            ),
         ),
         models=ModelSettings(
-            default_model="qwen35b_no_think",
-            thinking_model="qwen35b_think",
-            max_model_len=int(os.getenv("MAX_MODEL_LEN", "8192")),
+            default_model=os.getenv("CHAINLIT_DEFAULT_MODEL", "qwen35b_no_think"),
+            default_model_display_name=os.getenv(
+                "CHAINLIT_DEFAULT_MODEL_DISPLAY_NAME",
+                "chat",
+            ),
+            thinking_model=os.getenv("CHAINLIT_THINKING_MODEL", "qwen35b_think"),
+            thinking_model_display_name=os.getenv(
+                "CHAINLIT_THINKING_MODEL_DISPLAY_NAME",
+                "thinking",
+            ),
+            max_model_len=int(os.getenv("MAX_MODEL_LEN", "2048")),
             system_prompt=os.getenv(
                 "CHAINLIT_SYSTEM_PROMPT",
                 "You are a concise and helpful assistant.",
@@ -131,7 +242,7 @@ def load_settings() -> AppSettings:
             password=os.getenv("ADMIN_APP_PASSWORD", "admin123"),
         ),
         quota=QuotaSettings(
-            thread_limit_tokens=int(os.getenv("CHAINLIT_THREAD_LIMIT_TOKENS", "8192")),
+            thread_limit_tokens=int(os.getenv("CHAINLIT_THREAD_LIMIT_TOKENS", "2048")),
             user_limit_tokens=int(os.getenv("CHAINLIT_USER_LIMIT_TOKENS", "100000")),
             reservation_ttl_seconds=int(
                 os.getenv("CHAINLIT_QUOTA_RESERVATION_TTL_SECONDS", "600")
@@ -145,6 +256,55 @@ def load_settings() -> AppSettings:
             tiktoken_encoding=os.getenv(
                 "CHAINLIT_QUOTA_TIKTOKEN_ENCODING",
                 "cl100k_base",
+            ),
+        ),
+        team_token_auth=TeamTokenAuthSettings(
+            mode=os.getenv("CHAT_AUTH_MODE", "managed_user").strip().lower(),
+            fixed_game_id=int(os.getenv("GZCTF_FIXED_GAME_ID", "0")),
+            fixed_game_public_key=os.getenv("GZCTF_FIXED_GAME_PUBLIC_KEY", "").strip(),
+            fixed_game_private_key=os.getenv(
+                "GZCTF_FIXED_GAME_PRIVATE_KEY",
+                "",
+            ).strip(),
+        ),
+        caps=CapsSettings(
+            enabled=env_flag("CAPS_ENABLED", True),
+            storage_root=os.getenv("CAPS_STORAGE_ROOT", "/data/ncoai/caps").strip(),
+            ftp_host=os.getenv("CAPS_FTP_HOST", "0.0.0.0").strip(),
+            ftp_port=int(os.getenv("CAPS_FTP_PORT", "3221")),
+            ftp_username=os.getenv("CAPS_FTP_USERNAME", "").strip(),
+            ftp_password=os.getenv("CAPS_FTP_PASSWORD", "").strip(),
+            ftp_passive_port_start=int(
+                os.getenv("CAPS_FTP_PASSIVE_PORT_START", "41000")
+            ),
+            ftp_passive_port_end=int(
+                os.getenv("CAPS_FTP_PASSIVE_PORT_END", "41099")
+            ),
+            ftp_public_host=(
+                os.getenv("CAPS_FTP_PUBLIC_HOST", "").strip() or None
+            ),
+            ftp_tls_enabled=env_flag("CAPS_FTP_TLS_ENABLED", False),
+            ftp_tls_certfile=(
+                os.getenv(
+                    "CAPS_FTP_TLS_CERTFILE",
+                    os.getenv("NGINX_SSL_CERT", ""),
+                ).strip()
+                or None
+            ),
+            ftp_tls_keyfile=(
+                os.getenv(
+                    "CAPS_FTP_TLS_KEYFILE",
+                    os.getenv("NGINX_SSL_KEY", ""),
+                ).strip()
+                or None
+            ),
+            ftp_tls_control_required=env_flag(
+                "CAPS_FTP_TLS_CONTROL_REQUIRED",
+                True,
+            ),
+            ftp_tls_data_required=env_flag(
+                "CAPS_FTP_TLS_DATA_REQUIRED",
+                True,
             ),
         ),
         chainlit_root_path=os.getenv("CHAINLIT_ROOT_PATH", ""),

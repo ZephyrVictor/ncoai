@@ -1,15 +1,17 @@
-import { useCallback, useContext } from 'react';
+import { useCallback, useContext, useEffect, useRef } from 'react';
 import { useRecoilValue, useResetRecoilState, useSetRecoilState } from 'recoil';
 import {
   actionState,
   askUserState,
   chatSettingsInputsState,
   chatSettingsValueState,
+  configState,
   currentThreadIdState,
   elementState,
   favoriteMessagesState,
   firstUserInteraction,
-  loadingState,
+  IGenerationState,
+  generationState,
   messagesState,
   sessionIdState,
   sessionState,
@@ -32,14 +34,17 @@ const useChatInteract = () => {
   const client = useContext(ChainlitContext);
   const session = useRecoilValue(sessionState);
   const askUser = useRecoilValue(askUserState);
+  const config = useRecoilValue(configState);
+  const generation = useRecoilValue(generationState);
   const sessionId = useRecoilValue(sessionIdState);
+  const resetGeneration = useResetRecoilState(generationState);
 
   const resetChatSettings = useResetRecoilState(chatSettingsInputsState);
   const resetSessionId = useResetRecoilState(sessionIdState);
   const resetChatSettingsValue = useResetRecoilState(chatSettingsValueState);
 
   const setFirstUserInteraction = useSetRecoilState(firstUserInteraction);
-  const setLoading = useSetRecoilState(loadingState);
+  const setGeneration = useSetRecoilState(generationState);
   const setMessages = useSetRecoilState(messagesState);
   const setElements = useSetRecoilState(elementState);
   const setTasklists = useSetRecoilState(tasklistState);
@@ -51,12 +56,33 @@ const useChatInteract = () => {
   const setFavoriteMessages = useSetRecoilState(favoriteMessagesState);
   const setThreadQuota = useSetRecoilState(threadQuotaState);
   const setUserQuota = useSetRecoilState(userQuotaState);
+  const generationRef = useRef<IGenerationState>({ phase: 'idle' });
+
+  const syncGenerationState = useCallback(
+    (nextState: IGenerationState) => {
+      generationRef.current = nextState;
+      setGeneration(nextState);
+    },
+    [setGeneration]
+  );
+
+  useEffect(() => {
+    generationRef.current = generation;
+  }, [generation]);
+
+  useEffect(() => {
+    return () => {
+      generationRef.current = { phase: 'idle' };
+    };
+  }, []);
 
   const clear = useCallback(() => {
     session?.socket.emit('clear_session');
     session?.socket.disconnect();
+    generationRef.current = { phase: 'idle' };
     setIdToResume(undefined);
     resetSessionId();
+    resetGeneration();
     setFirstUserInteraction(undefined);
     setMessages([]);
     setElements([]);
@@ -69,24 +95,55 @@ const useChatInteract = () => {
     setCurrentThreadId(undefined);
     setThreadQuota(undefined);
     setUserQuota(undefined);
-  }, [session]);
+  }, [resetGeneration, session]);
 
   const sendMessage = useCallback(
     (
       message: PartialBy<IStep, 'createdAt' | 'id'>,
       fileReferences: IFileRef[] = []
     ) => {
+      if (generationRef.current.phase !== 'idle') {
+        return;
+      }
+
       if (!message.id) {
         message.id = uuidv4();
       }
       if (!message.createdAt) {
         message.createdAt = new Date().toISOString();
       }
-      setMessages((oldMessages) => addMessage(oldMessages, message as IStep));
+      const assistantMessageId = uuidv4();
+      const assistantName = config?.ui?.name || 'Assistant';
 
-      session?.socket.emit('client_message', { message, fileReferences });
+      setMessages((oldMessages) => {
+        const nextMessages = addMessage(oldMessages, message as IStep);
+        return addMessage(nextMessages, {
+          id: assistantMessageId,
+          threadId: message.threadId || '',
+          type: 'assistant_message',
+          name: assistantName,
+          output: '',
+          streaming: false,
+          createdAt: new Date().toISOString(),
+          metadata: {
+            generation_status: 'pending',
+            optimistic: true
+          }
+        });
+      });
+
+      syncGenerationState({
+        phase: 'pending',
+        assistantMessageId
+      });
+
+      session?.socket.emit('client_message', {
+        message,
+        fileReferences,
+        assistantMessageId
+      });
     },
-    [session?.socket]
+    [config?.ui?.name, session?.socket, setMessages, syncGenerationState]
   );
 
   const editMessage = useCallback(
@@ -184,23 +241,41 @@ const useChatInteract = () => {
   );
 
   const stopTask = useCallback(() => {
+    const activeAssistantMessageId = generationRef.current.assistantMessageId;
+    if (!activeAssistantMessageId || generationRef.current.phase === 'idle') {
+      return;
+    }
+
+    syncGenerationState({
+      phase: 'stopping',
+      assistantMessageId: activeAssistantMessageId
+    });
+
     setMessages((oldMessages) =>
-      oldMessages.map((m) => {
-        m.streaming = false;
-        return m;
+      oldMessages.map((message) => {
+        if (message.id !== activeAssistantMessageId) {
+          return message;
+        }
+
+        return {
+          ...message,
+          streaming: false,
+          metadata: {
+            ...(message.metadata || {}),
+            generation_status: 'stopping'
+          }
+        };
       })
     );
 
-    setLoading(false);
-
     session?.socket.emit('stop');
-  }, [session?.socket]);
+  }, [session?.socket, setMessages, syncGenerationState]);
 
   const uploadFile = useCallback(
     (file: File, onProgress: (progress: number) => void, parentId?: string) => {
       return client.uploadFile(file, onProgress, sessionId, parentId);
     },
-    [sessionId]
+    [client, sessionId]
   );
 
   return {

@@ -1,0 +1,70 @@
+{
+  "run_id": "20260412T134851Z-2a7844b5",
+  "started_at": "2026-04-12T13:50:14.274324+00:00",
+  "finished_at": "2026-04-12T13:50:57.153539+00:00",
+  "wall_time_seconds": 42.879215,
+  "target_rps": 5,
+  "actual_average_rps": 0.6063543840529729,
+  "actual_peak_rps": 5,
+  "total_requests": 26,
+  "success_count": 26,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 3683516,
+  "behavior_counts": {
+    "normal": 26
+  },
+  "behavior_success_counts": {
+    "normal": 26
+  },
+  "normal_request_count": 26,
+  "normal_success_count": 26,
+  "normal_success_rate": 1.0,
+  "stop_request_count": 0,
+  "stop_clean_completion_count": 0,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 10,
+  "users_with_successful_normal_chat_rate": 1.0,
+  "availability_passed": true,
+  "availability_failed_checks": [],
+  "ttft_ms": {
+    "p50": 423.568,
+    "p90": 552.8495,
+    "p95": 570.4925000000001,
+    "p99": 578.29175
+  },
+  "wall_time_ms": {
+    "p50": 12952.287345513469,
+    "p90": 14268.62114200776,
+    "p95": 14980.51196198503,
+    "p99": 15459.909504490497
+  },
+  "average_total_tokens": 526.3076923076923,
+  "stop_success_rate": 0.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.0,
+  "average_success_requests_before_user_limit": 2.6,
+  "average_tokens_before_user_limit": 1368.4,
+  "users_deleted": 10,
+  "smoke_result": {
+    "success": false,
+    "login_ok": true,
+    "stream_ok": true,
+    "stop_ok": false,
+    "thread_switch_ok": false,
+    "screenshots": [
+      "01-first-thread.png"
+    ],
+    "notes": [
+      "Locator.wait_for: Timeout 5000ms exceeded.\nCall log:\n  - waiting for get_by_text(\"已停止\") to be visible\n"
+    ]
+  },
+  "abort_reason": "duration reached (30.0s)"
+}

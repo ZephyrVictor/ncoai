@@ -4,6 +4,8 @@ redis:7 | required | quota cache and hot-path storage | no host-network requirem
 nginx:alpine | required | reverse proxy for /chat and /admin | needs host.docker.internal access
 prom/prometheus:latest | required | metrics scraping and target health view | needs host.docker.internal access
 grafana/grafana:latest | required | metrics dashboards | no host-network requirement
+grafana/loki:3.1.0 | required | centralized log storage for Grafana Explore and ops dashboards | no host-network requirement
+grafana/promtail:3.1.0 | required | collects Docker and host-service logs into Loki | needs docker.sock and host log mounts
 
 # Recommended observability images
 prom/node-exporter:latest | recommended | host CPU / memory / filesystem metrics | needs host mounts

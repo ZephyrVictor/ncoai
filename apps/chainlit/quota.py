@@ -347,9 +347,19 @@ redis.call("EXPIRE", request_key, ttl_seconds)
 return {1}
 """
 
-    def __init__(self, database_url: str, settings=SETTINGS) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        settings=SETTINGS,
+        *,
+        engine: AsyncEngine | None = None,
+    ) -> None:
         self._settings = settings
-        self._engine: AsyncEngine = create_app_engine(database_url)
+        self._owns_engine = engine is None
+        self._engine = engine or create_app_engine(
+            database_url,
+            pool_settings=settings.database.pool,
+        )
         self._repository = QuotaRepository(self._engine)
         self._control_plane_repository = ControlPlaneRepository(self._engine)
         self._config_provider = DatabaseQuotaConfigProvider(
@@ -389,7 +399,10 @@ return {1}
     async def close(self) -> None:
         if self._redis is not None:
             await self._redis.close()
-        await self._engine.dispose()
+            self._redis = None
+        if self._owns_engine:
+            await self._engine.dispose()
+        self._initialized = False
 
     async def _ensure_ready(self) -> None:
         if not self._initialized:

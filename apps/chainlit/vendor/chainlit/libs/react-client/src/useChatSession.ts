@@ -21,6 +21,7 @@ import {
   elementState,
   favoriteMessagesState,
   firstUserInteraction,
+  generationState,
   isAiSpeakingState,
   loadingState,
   mcpState,
@@ -34,6 +35,7 @@ import {
   threadQuotaState,
   threadIdToResumeState,
   tokenCountState,
+  type IGenerationState,
   userQuotaState,
   wavRecorderState,
   wavStreamPlayerState
@@ -53,6 +55,7 @@ import {
 import {
   addMessage,
   deleteMessageById,
+  findMessageById,
   updateMessageById,
   updateMessageContentById
 } from 'src/utils/message';
@@ -170,9 +173,14 @@ const applyQuotaFromSteps = (
   });
 };
 
+const toIdleGenerationState = (): IGenerationState => ({
+  phase: 'idle'
+});
+
 const useChatSession = () => {
   const client = useContext(ChainlitContext);
   const sessionId = useRecoilValue(sessionIdState);
+  const generation = useRecoilValue(generationState);
 
   const [session, setSession] = useRecoilState(sessionState);
   const setIsAiSpeaking = useSetRecoilState(isAiSpeakingState);
@@ -197,6 +205,7 @@ const useChatSession = () => {
   const setTokenCount = useSetRecoilState(tokenCountState);
   const setThreadQuota = useSetRecoilState(threadQuotaState);
   const setUserQuota = useSetRecoilState(userQuotaState);
+  const setGeneration = useSetRecoilState(generationState);
   const [chatProfile, setChatProfile] = useRecoilState(chatProfileState);
   const idToResume = useRecoilValue(threadIdToResumeState);
   const setThreadResumeError = useSetRecoilState(resumeThreadErrorState);
@@ -205,6 +214,19 @@ const useChatSession = () => {
   const [currentThreadId, setCurrentThreadId] =
     useRecoilState(currentThreadIdState);
   const streamingResumeRefreshId = useRef(0);
+  const generationRef = useRef<IGenerationState>(generation);
+
+  useEffect(() => {
+    generationRef.current = generation;
+  }, [generation]);
+
+  const syncGenerationState = useCallback(
+    (nextState: IGenerationState) => {
+      generationRef.current = nextState;
+      setGeneration(nextState);
+    },
+    [setGeneration]
+  );
 
   // Use currentThreadId as thread id in websocket header
   useEffect(() => {
@@ -320,6 +342,48 @@ const useChatSession = () => {
 
       socket.on('task_end', () => {
         setLoading(false);
+        const activeGeneration = generationRef.current;
+        const assistantMessageId = activeGeneration.assistantMessageId;
+
+        if (!assistantMessageId) {
+          syncGenerationState(toIdleGenerationState());
+          return;
+        }
+
+        setMessages((oldMessages) => {
+          const assistantMessage = findMessageById(
+            oldMessages,
+            assistantMessageId
+          );
+
+          if (!assistantMessage) {
+            return oldMessages;
+          }
+
+          const isOptimistic = Boolean(assistantMessage.metadata?.optimistic);
+          if (isOptimistic && !assistantMessage.output) {
+            return deleteMessageById(oldMessages, assistantMessageId);
+          }
+
+          const nextMetadata = assistantMessage.metadata
+            ? Object.fromEntries(
+                Object.entries(assistantMessage.metadata).filter(
+                  ([key]) => key !== 'optimistic'
+                )
+              )
+            : undefined;
+
+          return updateMessageById(oldMessages, assistantMessageId, {
+            ...assistantMessage,
+            streaming: false,
+            metadata:
+              nextMetadata && Object.keys(nextMetadata).length
+                ? nextMetadata
+                : undefined
+          });
+        });
+
+        syncGenerationState(toIdleGenerationState());
       });
 
       socket.on('reload', () => {
@@ -488,9 +552,28 @@ const useChatSession = () => {
 
       socket.on('update_message', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
-        setMessages((oldMessages) =>
-          updateMessageById(oldMessages, message.id, message)
-        );
+        setMessages((oldMessages) => {
+          const activeGeneration = generationRef.current;
+          const activeAssistantMessageId = activeGeneration.assistantMessageId;
+
+          if (
+            activeGeneration.phase === 'stopping' &&
+            activeAssistantMessageId === message.id
+          ) {
+            const existingMessage = findMessageById(oldMessages, message.id);
+            if (!existingMessage) {
+              return oldMessages;
+            }
+
+            return updateMessageById(oldMessages, message.id, {
+              ...message,
+              output: existingMessage.output,
+              streaming: false
+            });
+          }
+
+          return updateMessageById(oldMessages, message.id, message);
+        });
       });
 
       socket.on('delete_message', (message: IStep) => {
@@ -501,12 +584,34 @@ const useChatSession = () => {
 
       socket.on('stream_start', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
+        const activeGeneration = generationRef.current;
+        if (
+          activeGeneration.phase === 'stopping' &&
+          activeGeneration.assistantMessageId === message.id
+        ) {
+          return;
+        }
+
         setMessages((oldMessages) => addMessage(oldMessages, message));
+        if (activeGeneration.assistantMessageId === message.id) {
+          syncGenerationState({
+            phase: 'streaming',
+            assistantMessageId: message.id
+          });
+        }
       });
 
       socket.on(
         'stream_token',
         ({ id, token, isSequence, isInput }: IToken) => {
+          const activeGeneration = generationRef.current;
+          if (
+            activeGeneration.phase === 'stopping' &&
+            activeGeneration.assistantMessageId === id
+          ) {
+            return;
+          }
+
           setMessages((oldMessages) =>
             updateMessageContentById(
               oldMessages,
@@ -516,6 +621,13 @@ const useChatSession = () => {
               isInput
             )
           );
+
+          if (activeGeneration.assistantMessageId === id) {
+            syncGenerationState({
+              phase: 'streaming',
+              assistantMessageId: id as string
+            });
+          }
         }
       );
 
@@ -675,7 +787,7 @@ const useChatSession = () => {
         }
       });
     },
-    [setSession, sessionId, idToResume, chatProfile]
+    [chatProfile, client, idToResume, sessionId, setGeneration, setSession, syncGenerationState]
   );
 
   const connect = useCallback(debounce(_connect, 200), [_connect]);
@@ -685,7 +797,8 @@ const useChatSession = () => {
       session.socket.removeAllListeners();
       session.socket.close();
     }
-  }, [session]);
+    syncGenerationState(toIdleGenerationState());
+  }, [session, syncGenerationState]);
 
   return {
     connect,

@@ -33,5 +33,10 @@ python "$ROOT_DIR/scripts/deploy/check_runtime.py" \
 
 HOST="${LITELLM_HOST}"
 PORT="${LITELLM_PORT}"
+NUM_WORKERS="${LITELLM_NUM_WORKERS:-1}"
+CONFIG_OUTPUT="$ROOT_DIR/.local/generated/litellm.config.yaml"
 
-exec litellm --host "$HOST" --port "$PORT" --config "$ROOT_DIR/infra/litellm/config.yaml"
+python "$ROOT_DIR/scripts/litellm/render_config.py" \
+  --output "$CONFIG_OUTPUT"
+
+exec litellm --host "$HOST" --port "$PORT" --num_workers "$NUM_WORKERS" --config "$CONFIG_OUTPUT"

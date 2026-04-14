@@ -272,9 +272,9 @@ async def disconnect(sid):
 async def stop(sid):
     if session := WebsocketSession.get(sid):
         init_ws_context(session)
-        await Message(content="Task manually stopped.").send()
+        session.stop_requested = True
 
-        if session.current_task:
+        if session.current_task and not session.current_task.done():
             session.current_task.cancel()
 
         if config.code.on_stop:
@@ -283,6 +283,7 @@ async def stop(sid):
 
 async def process_message(session: WebsocketSession, payload: MessagePayload):
     """Process a message from the user."""
+    current_task = asyncio.current_task()
     try:
         context = init_ws_context(session)
         await context.emitter.task_start()
@@ -300,6 +301,10 @@ async def process_message(session: WebsocketSession, payload: MessagePayload):
         ).send()
     finally:
         await context.emitter.task_end()
+        if session.current_task is current_task:
+            session.current_task = None
+            session.stop_requested = False
+            session.active_generation_assistant_message_id = None
 
 
 @sio.on("edit_message")  # pyright: ignore [reportOptionalCall]
@@ -391,6 +396,18 @@ async def fetch_favorites(sid):
 async def message(sid, payload: MessagePayload):
     """Handle a message sent by the User."""
     session = WebsocketSession.require(sid)
+    if session.current_task and not session.current_task.done():
+        context = init_ws_context(session)
+        await context.emitter.send_toast("当前正在生成，请等待或先停止", type="info")
+        return
+
+    if session.current_task and session.current_task.done():
+        session.current_task = None
+
+    session.stop_requested = False
+    session.active_generation_assistant_message_id = payload.get(
+        "assistantMessageId"
+    )
 
     task = asyncio.create_task(process_message(session, payload))
     session.current_task = task

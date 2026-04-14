@@ -1,24 +1,28 @@
 model_list:
   - model_name: qwen35b_no_think
     litellm_params:
-      model: openai/qwen35b
-      api_base: http://127.0.0.1:12233/v1
+      model: ${primary_model}
+      api_base: ${primary_api_base}
       api_key: dummy
+      request_timeout: ${primary_request_timeout_seconds}
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
   - model_name: qwen35b_think
     litellm_params:
-      model: openai/qwen35b
-      api_base: http://127.0.0.1:12233/v1
+      model: ${primary_model}
+      api_base: ${primary_api_base}
       api_key: dummy
+      request_timeout: ${primary_request_timeout_seconds}
       extra_body:
         chat_template_kwargs:
           enable_thinking: true
+${backup_model_block}
 
 litellm_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/LITELLM_DATABASE_URL
-  set_verbose: true
+  set_verbose: ${litellm_set_verbose}
   drop_params: true
   telemetry: false
+${fallbacks_block}

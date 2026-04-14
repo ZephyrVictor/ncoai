@@ -19,6 +19,14 @@ CHAINLIT_SCHEMA_STATEMENTS = [
     );
     """,
     """
+    CREATE INDEX IF NOT EXISTS threads_user_id_created_at_idx
+    ON threads ("userId", "createdAt" DESC);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS threads_user_identifier_idx
+    ON threads ("userIdentifier");
+    """,
+    """
     CREATE TABLE IF NOT EXISTS steps (
         "id" UUID PRIMARY KEY,
         "name" TEXT NOT NULL,
@@ -43,6 +51,14 @@ CHAINLIT_SCHEMA_STATEMENTS = [
         "language" TEXT,
         "indent" INT
     );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS steps_thread_id_created_at_idx
+    ON steps ("threadId", "createdAt" ASC);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS steps_parent_id_idx
+    ON steps ("parentId");
     """,
     """
     ALTER TABLE steps ADD COLUMN IF NOT EXISTS "defaultOpen" BOOLEAN;
@@ -71,6 +87,14 @@ CHAINLIT_SCHEMA_STATEMENTS = [
     );
     """,
     """
+    CREATE INDEX IF NOT EXISTS elements_thread_id_idx
+    ON elements ("threadId");
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS elements_for_id_idx
+    ON elements ("forId");
+    """,
+    """
     CREATE TABLE IF NOT EXISTS feedbacks (
         "id" UUID PRIMARY KEY,
         "forId" UUID NOT NULL,
@@ -78,6 +102,14 @@ CHAINLIT_SCHEMA_STATEMENTS = [
         "value" INT NOT NULL,
         "comment" TEXT
     );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS feedbacks_for_id_idx
+    ON feedbacks ("forId");
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS feedbacks_thread_id_idx
+    ON feedbacks ("threadId");
     """,
     """
     CREATE TABLE IF NOT EXISTS quota_usage_ledger (
@@ -182,6 +214,19 @@ CHAINLIT_SCHEMA_STATEMENTS = [
     ON quota_policies (scope_type, scope_id, is_active);
     """,
     """
+    CREATE TABLE IF NOT EXISTS team_token_auth_config (
+        config_key TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        config_version BIGINT NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    """
+    ALTER TABLE team_token_auth_config
+    ADD COLUMN IF NOT EXISTS config_version BIGINT NOT NULL DEFAULT 1;
+    """,
+    """
     CREATE TABLE IF NOT EXISTS user_import_jobs (
         id TEXT PRIMARY KEY,
         preview_only BOOLEAN NOT NULL DEFAULT TRUE,
@@ -209,5 +254,29 @@ CHAINLIT_SCHEMA_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS user_import_job_rows_job_id_idx
     ON user_import_job_rows (job_id, row_number);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS caps_submissions (
+        id TEXT PRIMARY KEY,
+        user_identifier TEXT NOT NULL,
+        game_id INT NOT NULL,
+        team_id INT NOT NULL,
+        player_name TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        stored_filename TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        file_extension TEXT NOT NULL,
+        content_type TEXT,
+        file_size_bytes BIGINT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS caps_submissions_team_id_created_at_idx
+    ON caps_submissions (team_id, created_at DESC);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS caps_submissions_user_identifier_idx
+    ON caps_submissions (user_identifier);
     """,
 ]

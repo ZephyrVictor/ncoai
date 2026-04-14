@@ -8,16 +8,27 @@ import { ChainlitContext } from '@chainlit/react-client';
 
 import './index.css';
 
+import ChatLifecycleHarness from './e2e/ChatLifecycleHarness';
 import { i18nSetupLocalization } from './i18n';
 
 i18nSetupLocalization();
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <ChainlitContext.Provider value={apiClient}>
+const isE2EChatLifecycleRoute = window.location.pathname.includes(
+  '/__e2e__/chat-lifecycle'
+);
+
+const app = (
+  <ChainlitContext.Provider value={apiClient}>
+    {isE2EChatLifecycleRoute ? (
+      <ChatLifecycleHarness />
+    ) : (
       <RecoilRoot>
         <AppWrapper />
       </RecoilRoot>
-    </ChainlitContext.Provider>
-  </React.StrictMode>
+    )}
+  </ChainlitContext.Provider>
+);
+
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  isE2EChatLifecycleRoute ? app : <React.StrictMode>{app}</React.StrictMode>
 );

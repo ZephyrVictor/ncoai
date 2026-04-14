@@ -1,0 +1,15 @@
+{
+  "prepared_at": "2026-04-13T15:13:48.334019+00:00",
+  "run_id": "20260413T151347Z-868b8a9c",
+  "purge_prefix": "qps-test-",
+  "users_requested": 0,
+  "purged_users": 120,
+  "created_users": 0,
+  "active_before": 120,
+  "deleted_before": 1743,
+  "active_after": 0,
+  "deleted_after": 1863,
+  "users_json": null,
+  "shared_password": null,
+  "credentials_preview": []
+}

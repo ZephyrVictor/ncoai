@@ -100,7 +100,10 @@
     "messages": {
       "status": {
         "using": "Using",
-        "used": "Used"
+        "used": "Used",
+        "pendingResponse": "Waiting for response",
+        "stoppingResponse": "Stopping",
+        "stoppedResponse": "Stopped"
       },
       "actions": {
         "copy": {

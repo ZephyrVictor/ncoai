@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h1>运维总览</h1>
+      <p class="muted">集中查看资源、服务状态、告警和最近错误日志。</p>
+    </div>
+    <div class="actions">
+      <a class="ghost" href="{{ ops_summary.links.overview_dashboard }}" target="_blank" rel="noreferrer">Grafana 总览</a>
+      <a class="ghost" href="{{ ops_summary.links.logs_dashboard }}" target="_blank" rel="noreferrer">Grafana 日志</a>
+      <a class="ghost" href="{{ grafana_url }}" target="_blank" rel="noreferrer">Grafana 首页</a>
+    </div>
+  </div>
+  <div class="muted">更新时间：{{ ops_summary.generated_at | format_datetime }}</div>
+  {% if ops_summary.errors %}
+  <div class="stack status-stack">
+    {% for item in ops_summary.errors %}
+    <div class="inline-status error">{{ item }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="ops-grid">
+  <article class="panel stat-card">
+    <div class="stat-label">CPU</div>
+    <div class="stat-value">
+      {% if ops_summary.resources.cpu_percent is not none %}
+      {{ ops_summary.resources.cpu_percent | round(1) }}%
+      {% else %}
+      -
+      {% endif %}
+    </div>
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">内存</div>
+    <div class="stat-value">
+      {% if ops_summary.resources.memory_percent is not none %}
+      {{ ops_summary.resources.memory_percent | round(1) }}%
+      {% else %}
+      -
+      {% endif %}
+    </div>
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">磁盘</div>
+    <div class="stat-value">
+      {% if ops_summary.resources.disk_percent is not none %}
+      {{ ops_summary.resources.disk_percent | round(1) }}%
+      {% else %}
+      -
+      {% endif %}
+    </div>
+  </article>
+  <article class="panel stat-card">
+    <div class="stat-label">Firing 告警</div>
+    <div class="stat-value">{{ ops_summary.alerts.firing_count }}</div>
+  </article>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>服务状态</h2>
+    </div>
+    <div class="status-list">
+      {% for item in ops_summary.services %}
+      <div class="status-item">
+        <div>
+          <strong>{{ item.name }}</strong>
+          <div class="muted">{{ item.detail }}</div>
+        </div>
+        <span class="status-chip status-{{ item.status }}">{{ item.status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>健康探针</h2>
+    </div>
+    <div class="status-list">
+      {% for item in ops_summary.health_checks %}
+      <div class="status-item">
+        <div>
+          <strong>{{ item.name }}</strong>
+          <div class="muted">{{ item.detail }}</div>
+        </div>
+        <span class="status-chip status-{{ item.status }}">{{ item.status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>告警摘要</h2>
+    </div>
+    {% if ops_alerts.ok and ops_alerts["items"] %}
+    <div class="table-wrap">
+      <table data-testid="ops-alerts-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>状态</th>
+            <th>级别</th>
+            <th>摘要</th>
+            <th>开始时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in ops_alerts["items"] %}
+          <tr>
+            <td><strong>{{ item.name }}</strong></td>
+            <td><span class="status-chip status-{{ item.state }}">{{ item.state }}</span></td>
+            <td>{{ item.severity }}</td>
+            <td>{{ item.summary or item.description or '-' }}</td>
+            <td>{{ item.active_at | format_datetime }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% elif ops_alerts.ok %}
+    <div class="inline-status success">当前没有 firing 或 pending 告警。</div>
+    {% else %}
+    <div class="inline-status error">{{ ops_alerts.error or '告警数据暂时不可用。' }}</div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>今日异常日志</h2>
+    </div>
+    {% if ops_logs.ok and ops_logs["items"] %}
+    <div class="log-lines" data-testid="ops-logs-list">
+      {% for item in ops_logs["items"] %}
+      <div class="log-line">
+        <div class="log-meta">
+          <span>{{ item.timestamp | format_datetime }}</span>
+          <span>{{ item.service }}</span>
+          <span>{{ item.source }}</span>
+          <span>{{ item.level }}</span>
+        </div>
+        <pre>{{ item.message }}</pre>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif ops_logs.ok %}
+    <div class="inline-status success">今天还没有抓到 4 个业务服务的异常日志。</div>
+    {% else %}
+    <div class="inline-status error">{{ ops_logs.error or '日志数据暂时不可用。' }}</div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

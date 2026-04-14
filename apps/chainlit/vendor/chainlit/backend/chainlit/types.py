@@ -23,6 +23,7 @@ from dataclasses import field
 from dataclasses_json import DataClassJsonMixin
 from pydantic import BaseModel
 from pydantic.dataclasses import dataclass
+from typing_extensions import NotRequired
 
 InputWidgetType = Literal[
     "switch",
@@ -172,6 +173,7 @@ class FileDict(TypedDict):
 class MessagePayload(TypedDict):
     message: "StepDict"
     fileReferences: Optional[List[FileReference]]
+    assistantMessageId: NotRequired[Optional[str]]
 
 
 class InputAudioChunkPayload(TypedDict):

@@ -29,6 +29,8 @@ for container in \
   ncoai-nginx \
   ncoai-prometheus \
   ncoai-grafana \
+  ncoai-loki \
+  ncoai-promtail \
   ncoai-node-exporter \
   ncoai-postgres-exporter \
   ncoai-redis-exporter \

@@ -4,7 +4,7 @@
 <section class="grid">
   <div class="panel">
     <div class="panel-header">
-      <h1>{{ '编辑用户' if edit_user else '创建用户' }}</h1>
+      <h1>{{ '编辑主体' if edit_user else '创建主体' }}</h1>
       <a class="ghost" href="{{ root_path }}/users">重置</a>
     </div>
     <p class="muted">Session token 上限为只读参考值，来自当前模型运行时配置。</p>
@@ -12,7 +12,7 @@
     <form id="user-form" data-testid="user-form" class="stack">
       <input id="editing-identifier" type="hidden" value="{{ edit_user.identifier if edit_user else '' }}" />
       <label>
-        用户标识
+        主体标识
         <input id="user-identifier" type="text" value="{{ edit_user.identifier if edit_user else '' }}" {% if edit_user %}readonly{% endif %} required />
       </label>
       <label>
@@ -20,14 +20,23 @@
         <input id="user-display-name" type="text" value="{{ edit_user.display_name if edit_user else '' }}" required />
       </label>
       <label>
-        密码{% if edit_user %}（留空则不修改）{% endif %}
-        <input id="user-password" type="password" value="" {% if not edit_user %}required{% endif %} />
+        密码{% if edit_user and edit_user.is_password_editable %}（留空则不修改）{% endif %}
+        <input
+          id="user-password"
+          type="password"
+          value=""
+          {% if not edit_user %}required{% endif %}
+          {% if edit_user and not edit_user.is_password_editable %}disabled placeholder="该主体使用 Team Token 认证，无需密码"{% endif %}
+        />
       </label>
+      {% if edit_user and not edit_user.is_password_editable %}
+      <div class="muted">当前主体通过 Team Token 登录，admin 仅管理显示名称、启用状态和配额表现。</div>
+      {% endif %}
       <label class="checkbox">
         <input id="user-is-active" type="checkbox" {% if not edit_user or edit_user.is_active %}checked{% endif %} />
-        启用用户
+        启用主体
       </label>
-      <button id="user-submit" type="submit">{{ '保存修改' if edit_user else '创建用户' }}</button>
+      <button id="user-submit" type="submit">{{ '保存修改' if edit_user else '创建主体' }}</button>
     </form>
     <div id="user-form-status" class="inline-status" data-testid="user-form-status"></div>
   </div>
@@ -64,13 +73,14 @@
 
 <section class="panel">
   <div class="panel-header">
-    <h2>用户列表</h2>
+    <h2>主体列表</h2>
   </div>
   <div class="table-wrap">
     <table id="users-table" data-testid="users-table">
       <thead>
         <tr>
-          <th>用户</th>
+          <th>主体</th>
+          <th>认证</th>
           <th>启用</th>
           <th>当前额度</th>
           <th>已使用</th>
@@ -88,6 +98,7 @@
             <strong>{{ user.identifier }}</strong><br />
             <span class="muted">{{ user.display_name }}</span>
           </td>
+          <td><span class="badge badge-ok">{{ user.auth_label }}</span></td>
           <td>{{ '是' if user.is_active else '否' }}</td>
           <td>{{ user.current_limit_tokens | format_number }}</td>
           <td>{{ user.used_tokens | format_number }}</td>
@@ -147,21 +158,21 @@
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || '保存失败');
-      window.sessionStorage.setItem('adminFlash', editingIdentifier ? '用户已更新' : '用户已创建');
+      window.sessionStorage.setItem('adminFlash', editingIdentifier ? '主体已更新' : '主体已创建');
       window.location.href = `${window.ADMIN_ROOT_PATH}/users`;
     } catch (error) {
       userStatus.textContent = error.message || '保存失败';
       userStatus.className = 'inline-status error';
     } finally {
       userSubmit.disabled = false;
-      userSubmit.textContent = editingIdentifier ? '保存修改' : '创建用户';
+      userSubmit.textContent = editingIdentifier ? '保存修改' : '创建主体';
     }
   });
 
   document.querySelectorAll('[data-delete-user]').forEach((button) => {
     button.addEventListener('click', async () => {
       const identifier = button.dataset.deleteUser;
-      if (!window.confirm(`确认软删除用户 ${identifier} 吗？`)) return;
+      if (!window.confirm(`确认软删除主体 ${identifier} 吗？`)) return;
       button.disabled = true;
       button.textContent = '删除中...';
       try {
@@ -171,7 +182,7 @@
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '删除失败');
-        window.sessionStorage.setItem('adminFlash', `用户 ${identifier} 已删除`);
+        window.sessionStorage.setItem('adminFlash', `主体 ${identifier} 已删除`);
         window.location.reload();
       } catch (error) {
         renderFlash(error.message || '删除失败', 'error');

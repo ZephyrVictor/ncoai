@@ -13,6 +13,8 @@
   - `Nginx`
   - `Prometheus`
   - `Grafana`
+  - `Loki`
+  - `Promtail`
   - exporters
 
 This layout keeps GPU inference on the host while containerizing stateful infra and edge services.
@@ -98,11 +100,87 @@ This runs:
 
 - infra health checks
 - metrics entrypoint checks
+- Grafana / Loki datasource and dashboard checks
 - proxy and websocket checks
 - admin frontend E2E
 - chat frontend E2E
 - disabled feature-flag UI checks
 - quota and deletion ledger checks
+
+## HTTPS
+
+The deployment nginx can keep the existing internal HTTP entrypoint on `127.0.0.1:8088` while also serving a public domain on ports `80` and `443`.
+
+Recommended env values:
+
+- `NGINX_SERVER_NAME=ncoai.example.com`
+- `NGINX_PUBLIC_HTTP_PORT=80`
+- `NGINX_PUBLIC_HTTPS_PORT=443`
+- `NGINX_ENABLE_TLS=0`
+- `NGINX_SSL_CERT=/etc/letsencrypt/live/ncoai.example.com/fullchain.pem`
+- `NGINX_SSL_KEY=/etc/letsencrypt/live/ncoai.example.com/privkey.pem`
+
+Suggested rollout:
+
+1. restart nginx so it serves the public HTTP domain on port `80`
+2. request the certificate:
+
+```bash
+LETSENCRYPT_EMAIL=you@example.com bash scripts/deploy/request-cert.sh
+```
+
+To issue one certificate covering multiple hostnames while keeping a single
+canonical `NGINX_SERVER_NAME`, override the requested SAN list explicitly:
+
+```bash
+LETSENCRYPT_EMAIL=you@example.com \
+LETSENCRYPT_CERT_NAME=ncoai.example.com \
+LETSENCRYPT_DOMAINS="ncoai.example.com alias.example.com" \
+bash scripts/deploy/request-cert.sh
+```
+
+If Docker Hub is slow on the target machine, set `CERTBOT_IMAGE` in `infra/env/compose.env` to a reachable mirror first.
+
+3. set `NGINX_ENABLE_TLS=1`
+4. restart nginx again
+
+After that, nginx redirects `http://<domain>` to `https://<domain>` while validation scripts can still use `http://127.0.0.1:8088`.
+
+## FTP Uploads
+
+录像上传改为宿主机上的显式 FTPS 服务，不经过 nginx。
+
+Recommended env values:
+
+- `CAPS_ENABLED=1`
+- `CAPS_STORAGE_ROOT=/data/ncoai/caps`
+- `CAPS_FTP_HOST=0.0.0.0`
+- `CAPS_FTP_PORT=3221`
+- `CAPS_FTP_USERNAME=<fixed-account>`
+- `CAPS_FTP_PASSWORD=<fixed-password>`
+- `CAPS_FTP_PASSIVE_PORT_START=41000`
+- `CAPS_FTP_PASSIVE_PORT_END=41099`
+- `CAPS_FTP_PUBLIC_HOST=<public-ip-or-domain>` when the host is behind NAT
+- `CAPS_FTP_TLS_ENABLED=1`
+- `CAPS_FTP_TLS_CERTFILE=/path/to/readable/fullchain.pem`
+- `CAPS_FTP_TLS_KEYFILE=/path/to/readable/privkey.pem`
+- `CAPS_FTP_TLS_CONTROL_REQUIRED=1`
+- `CAPS_FTP_TLS_DATA_REQUIRED=1`
+
+Deployment checklist:
+
+1. set `CAPS_STORAGE_ROOT=/data/ncoai/caps`
+2. configure `CAPS_FTP_USERNAME` and `CAPS_FTP_PASSWORD`
+3. copy the TLS certificate and private key to a path readable by the host `chainlit` process
+4. open the FTPS control port `CAPS_FTP_PORT`
+5. open the passive range `CAPS_FTP_PASSIVE_PORT_START` to `CAPS_FTP_PASSIVE_PORT_END`
+6. point users at the fixed FTP account; the session root is chrooted to `/data/ncoai/caps/game-<GZCTF_FIXED_GAME_ID>`
+
+Client guidance:
+
+- use `FTP over TLS (explicit)` instead of plain FTP or SFTP
+- keep `Passive` mode enabled
+- if using a copied or self-signed certificate, trust/import that certificate on the client first
 
 ## Offline Image Preparation
 
@@ -121,6 +199,8 @@ Required:
 - `nginx:alpine` -> container `ncoai-nginx` -> port `8088`
 - `prom/prometheus:latest` -> container `ncoai-prometheus` -> port `9090`
 - `grafana/grafana:latest` -> container `ncoai-grafana` -> port `3001`
+- `grafana/loki:3.1.0` -> container `ncoai-loki` -> port `3101`
+- `grafana/promtail:3.1.0` -> container `ncoai-promtail`
 
 Recommended:
 
@@ -128,3 +208,11 @@ Recommended:
 - `prometheuscommunity/postgres-exporter:latest` -> container `ncoai-postgres-exporter`
 - `oliver006/redis_exporter:latest` -> container `ncoai-redis-exporter`
 - `prom/blackbox-exporter:latest` -> container `ncoai-blackbox-exporter`
+
+## Ops Entry Points
+
+- Admin summary: `/admin/ops`
+- Grafana dashboards: `/grafana/`
+- Host-only metrics:
+  - `http://127.0.0.1:${ADMIN_APP_PORT}${ADMIN_APP_ROOT_PATH}/metrics`
+  - `http://127.0.0.1:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}/metrics`

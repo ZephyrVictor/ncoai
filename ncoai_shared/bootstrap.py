@@ -8,11 +8,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from ncoai_shared.controlplane import ControlPlaneRepository
+from ncoai_shared.gzctf_team_token import resolve_public_key_base64
 from ncoai_shared.quota_cache import (
     clear_cached_global_quota_policy,
     store_cached_global_quota_policy,
 )
 from ncoai_shared.schema import CHAINLIT_SCHEMA_STATEMENTS
+from ncoai_shared.team_token_auth import (
+    clear_cached_team_token_auth_config,
+    store_cached_team_token_auth_config,
+)
 
 DEFAULT_GLOBAL_WINDOW_START = datetime(2024, 1, 1, tzinfo=timezone.utc)
 DEFAULT_GLOBAL_WINDOW_END = datetime(2099, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
@@ -76,3 +81,38 @@ async def sync_global_quota_policy_cache(
         return None
     await store_cached_global_quota_policy(redis, active_policy)
     return active_policy
+
+
+async def bootstrap_team_token_auth_config(
+    engine: AsyncEngine,
+    *,
+    public_key_base64: str | None,
+    private_key_base64: str | None,
+) -> dict[str, Any] | None:
+    repository = ControlPlaneRepository(engine)
+    existing = await repository.get_team_token_auth_config()
+    if existing is not None:
+        return existing
+
+    public_key = (public_key_base64 or "").strip()
+    private_key = (private_key_base64 or "").strip()
+    if not public_key and not private_key:
+        return None
+
+    resolved_public_key = resolve_public_key_base64(public_key, private_key)
+    return await repository.bootstrap_team_token_auth_config(resolved_public_key)
+
+
+async def sync_team_token_auth_config_cache(
+    engine: AsyncEngine,
+    redis: Redis,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    repository = ControlPlaneRepository(engine)
+    active_config = config or await repository.get_team_token_auth_config()
+    if active_config is None:
+        await clear_cached_team_token_auth_config(redis)
+        return None
+    await store_cached_team_token_auth_config(redis, active_config)
+    return active_config

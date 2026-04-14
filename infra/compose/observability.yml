@@ -12,21 +12,36 @@ services:
       ADMIN_APP_ROOT_PATH: ${ADMIN_APP_ROOT_PATH:-/admin}
       LITELLM_PORT: ${LITELLM_PORT:-33455}
       VLLM_PORT: ${VLLM_PORT:-12233}
+      PROMETHEUS_RETENTION_DAYS: ${PROMETHEUS_RETENTION_DAYS:-15}
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ../prometheus/prometheus.yml.template:/etc/prometheus/templates/prometheus.yml.template:ro
       - ../prometheus/blackbox.yml:/etc/prometheus/blackbox.yml:ro
-    command:
+      - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    entrypoint:
       - /bin/sh
       - -lc
       - |
-        envsubst '$$CHAINLIT_PORT $$CHAINLIT_ROOT_PATH $$ADMIN_APP_PORT $$ADMIN_APP_ROOT_PATH $$LITELLM_PORT $$VLLM_PORT' \
-          < /etc/prometheus/templates/prometheus.yml.template \
+        sed \
+          -e "s|\$${CHAINLIT_PORT}|$${CHAINLIT_PORT}|g" \
+          -e "s|\$${CHAINLIT_ROOT_PATH}|$${CHAINLIT_ROOT_PATH}|g" \
+          -e "s|\$${ADMIN_APP_PORT}|$${ADMIN_APP_PORT}|g" \
+          -e "s|\$${ADMIN_APP_ROOT_PATH}|$${ADMIN_APP_ROOT_PATH}|g" \
+          -e "s|\$${LITELLM_PORT}|$${LITELLM_PORT}|g" \
+          -e "s|\$${VLLM_PORT}|$${VLLM_PORT}|g" \
+          /etc/prometheus/templates/prometheus.yml.template \
           > /etc/prometheus/prometheus.yml
         exec /bin/prometheus \
           --config.file=/etc/prometheus/prometheus.yml \
-          --storage.tsdb.path=/prometheus
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=$${PROMETHEUS_RETENTION_DAYS}d
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9090/-/healthy >/dev/null 2>&1"]
       interval: 10s
@@ -38,14 +53,112 @@ services:
     container_name: ncoai-grafana
     restart: unless-stopped
     environment:
+      GRAFANA_PORT: ${GRAFANA_PORT:-3001}
+      GRAFANA_ROOT_PATH: ${GRAFANA_ROOT_PATH:-/grafana/}
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-_}
+      NGINX_ENABLE_TLS: ${NGINX_ENABLE_TLS:-0}
+      NGINX_PUBLIC_HTTP_PORT: ${NGINX_PUBLIC_HTTP_PORT:-80}
+      NGINX_PUBLIC_HTTPS_PORT: ${NGINX_PUBLIC_HTTPS_PORT:-443}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ops-overview.json
     ports:
-      - "${GRAFANA_PORT:-3001}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+      - loki
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        root_path="$${GRAFANA_ROOT_PATH:-/grafana/}"
+        export PATH="/usr/share/grafana/bin:$${PATH}"
+        case "$$root_path" in
+          */) ;;
+          *) root_path="$$root_path/" ;;
+        esac
+
+        if [ -n "$${GRAFANA_PUBLIC_URL:-}" ]; then
+          export GF_SERVER_ROOT_URL="$${GRAFANA_PUBLIC_URL}"
+        elif [ "$${NGINX_SERVER_NAME:-_}" != "_" ]; then
+          if [ "$${NGINX_ENABLE_TLS:-0}" = "1" ]; then
+            export GF_SERVER_ROOT_URL="https://$${NGINX_SERVER_NAME}$$root_path"
+          elif [ "$${NGINX_PUBLIC_HTTP_PORT:-80}" = "80" ]; then
+            export GF_SERVER_ROOT_URL="http://$${NGINX_SERVER_NAME}$$root_path"
+          else
+            export GF_SERVER_ROOT_URL="http://$${NGINX_SERVER_NAME}:$${NGINX_PUBLIC_HTTP_PORT}$$root_path"
+          fi
+        else
+          export GF_SERVER_ROOT_URL="http://127.0.0.1:$${GRAFANA_PORT}$$root_path"
+        fi
+
+        exec /run.sh
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.1.0}
+    container_name: ncoai-loki
+    restart: unless-stopped
+    environment:
+      LOKI_RETENTION_DAYS: ${LOKI_RETENTION_DAYS:-1}
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3101}:3100"
+    volumes:
+      - ../loki/loki.yml.template:/etc/loki/loki.yml.template:ro
+      - loki_data:/loki
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        sed \
+          -e "s|\$${LOKI_RETENTION_DAYS}|$${LOKI_RETENTION_DAYS}|g" \
+          /etc/loki/loki.yml.template \
+          > /etc/loki/config.yml
+        exec /usr/bin/loki -config.file=/etc/loki/config.yml
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  promtail:
+    image: ${PROMTAIL_IMAGE:-grafana/promtail:3.1.0}
+    container_name: ncoai-promtail
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ../promtail/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../../.local/devctl/logs:/var/log/ncoai-host:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9080/ready >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -62,6 +175,11 @@ services:
       - /:/host:ro,rslave
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   postgres-exporter:
     image: ${POSTGRES_EXPORTER_IMAGE:-prometheuscommunity/postgres-exporter:latest}
@@ -71,6 +189,11 @@ services:
       - postgres
     environment:
       DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-ncoai}:${POSTGRES_PASSWORD:-ncoai_dev}@postgres:5432/${POSTGRES_DB:-ncoai_chat}?sslmode=disable
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   redis-exporter:
     image: ${REDIS_EXPORTER_IMAGE:-oliver006/redis_exporter:latest}
@@ -80,6 +203,11 @@ services:
       - redis
     environment:
       REDIS_ADDR: redis://redis:6379
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   blackbox-exporter:
     image: ${BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:latest}
@@ -87,3 +215,13 @@ services:
     restart: unless-stopped
     volumes:
       - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:

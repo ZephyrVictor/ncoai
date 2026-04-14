@@ -28,6 +28,17 @@ export interface ISession {
   error?: boolean;
 }
 
+export type GenerationPhase =
+  | 'idle'
+  | 'pending'
+  | 'streaming'
+  | 'stopping';
+
+export interface IGenerationState {
+  phase: GenerationPhase;
+  assistantMessageId?: string;
+}
+
 export const threadIdToResumeState = atom<string | undefined>({
   key: 'ThreadIdToResume',
   default: undefined
@@ -90,6 +101,13 @@ export const tokenCountState = atom<number>({
 export const loadingState = atom<boolean>({
   key: 'Loading',
   default: false
+});
+
+export const generationState = atom<IGenerationState>({
+  key: 'GenerationState',
+  default: {
+    phase: 'idle'
+  }
 });
 
 export const askUserState = atom<IAsk | undefined>({

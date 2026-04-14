@@ -33,13 +33,18 @@ REDIS_URL = env("REDIS_URL", "redis://127.0.0.1:6379/0")
 ARTIFACT_DIR = Path(env("ADMIN_E2E_ARTIFACT_DIR", ".local/acceptance"))
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 SCREENSHOT_PATH = ARTIFACT_DIR / "admin-e2e-quota-v2.png"
-THREAD_LIMIT = int(env("MAX_MODEL_LEN", "8192"))
+THREAD_LIMIT = int(env("MAX_MODEL_LEN", "2048"))
 DEFAULT_USER_LIMIT = int(env("CHAINLIT_USER_LIMIT_TOKENS", "100000"))
 TOTAL_LIMIT_FOR_ACCEPTANCE = 20000
-SESSION_ACCEPTANCE_MIN_USED = 7600
 DEFAULT_MAX_COMPLETION = int(
     env("CHAINLIT_QUOTA_DEFAULT_MAX_COMPLETION_TOKENS", "2048")
 )
+SESSION_ACCEPTANCE_HEADROOM = 1024
+SESSION_ACCEPTANCE_TARGET_MAX = max(
+    DEFAULT_MAX_COMPLETION,
+    THREAD_LIMIT - SESSION_ACCEPTANCE_HEADROOM,
+)
+SESSION_ACCEPTANCE_MIN_USED = max(1024, THREAD_LIMIT - SESSION_ACCEPTANCE_HEADROOM)
 SYSTEM_PROMPT = env(
     "CHAINLIT_SYSTEM_PROMPT", "You are a concise and helpful assistant."
 )
@@ -548,7 +553,10 @@ def main() -> int:
                 if iteration > 1:
                     start_new_chat(total_page)
 
-                target_total_tokens = min(max(remaining_tokens - 64, 2048), 7600)
+                target_total_tokens = min(
+                    max(remaining_tokens - 64, DEFAULT_MAX_COMPLETION),
+                    SESSION_ACCEPTANCE_TARGET_MAX,
+                )
                 prompt, prompt_tokens = build_large_prompt_for_total_tokens(target_total_tokens)
                 previous_thread_used = footer_used_tokens(total_page)
                 turn = send_prompt_and_capture(

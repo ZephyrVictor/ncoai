@@ -100,7 +100,10 @@
     "messages": {
       "status": {
         "using": "使用中",
-        "used": "已使用"
+        "used": "已使用",
+        "pendingResponse": "正在等待响应",
+        "stoppingResponse": "正在停止",
+        "stoppedResponse": "已停止"
       },
       "actions": {
         "copy": {
@@ -258,4 +261,3 @@
     }
   }
 }
-

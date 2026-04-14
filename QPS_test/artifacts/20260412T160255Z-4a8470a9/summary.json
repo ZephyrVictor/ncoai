@@ -1,0 +1,85 @@
+{
+  "run_id": "20260412T160255Z-4a8470a9",
+  "started_at": "2026-04-12T16:02:55.378101+00:00",
+  "finished_at": "2026-04-12T16:14:15.170772+00:00",
+  "wall_time_seconds": 679.792671,
+  "target_rps": 120,
+  "actual_average_rps": 0.0,
+  "actual_peak_rps": 0,
+  "total_requests": 0,
+  "success_count": 0,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 0,
+  "behavior_counts": {},
+  "behavior_success_counts": {},
+  "normal_request_count": 0,
+  "normal_success_count": 0,
+  "normal_success_rate": 0.0,
+  "stop_request_count": 0,
+  "stop_clean_completion_count": 0,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 0,
+  "users_with_successful_normal_chat_rate": 0.0,
+  "availability_passed": false,
+  "availability_failed_checks": [
+    "browser smoke login/stream failed",
+    "normal chat success rate below 99%",
+    "successful normal-chat user coverage below 99%"
+  ],
+  "ttft_ms": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "wall_time_ms": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "generation_duration_ms": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "output_tps": {
+    "p50": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "average_total_tokens": 0.0,
+  "session_rollover_count": 0,
+  "average_turns_per_session": 0.0,
+  "natural_completion_rate": 0.0,
+  "disturbance_stop_rate": 0.0,
+  "post_stop_next_turn_success_rate": 1.0,
+  "stop_success_rate": 0.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 0.0,
+  "average_success_requests_before_user_limit": 0.0,
+  "average_tokens_before_user_limit": 0.0,
+  "users_deleted": 120,
+  "smoke_result": {
+    "success": false,
+    "login_ok": true,
+    "stream_ok": false,
+    "stop_ok": false,
+    "thread_switch_ok": false,
+    "screenshots": [],
+    "notes": [
+      "Locator.wait_for: Timeout 90000ms exceeded.\nCall log:\n  - waiting for locator(\"#stop-button\") to be hidden\n    184 × locator resolved to visible <button id=\"stop-button\" data-state=\"closed\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 rounded-full h-8 w-8\">…</button>\n"
+    ]
+  },
+  "workflow_error": "browser smoke failed; see QPS_test browser_smoke artifacts for details"
+}

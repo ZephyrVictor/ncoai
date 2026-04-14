@@ -10,6 +10,8 @@ CONTAINERS = {
     "ncoai-nginx": True,
     "ncoai-prometheus": True,
     "ncoai-grafana": True,
+    "ncoai-loki": True,
+    "ncoai-promtail": True,
     "ncoai-node-exporter": False,
     "ncoai-postgres-exporter": False,
     "ncoai-redis-exporter": False,

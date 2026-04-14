@@ -1,0 +1,74 @@
+{
+  "run_id": "20260412T151528Z-7fa52bda",
+  "started_at": "2026-04-12T15:16:13.860628+00:00",
+  "finished_at": "2026-04-12T15:17:51.973041+00:00",
+  "wall_time_seconds": 98.112413,
+  "target_rps": 0,
+  "actual_average_rps": 0.04076956093211161,
+  "actual_peak_rps": 1,
+  "total_requests": 4,
+  "success_count": 4,
+  "failure_count": 0,
+  "failure_type_counts": {},
+  "blocked_user_count": 0,
+  "transport_failure_count": 0,
+  "transport_failure_rate": 0.0,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 8052486,
+  "behavior_counts": {
+    "normal": 4
+  },
+  "behavior_success_counts": {
+    "normal": 4
+  },
+  "normal_request_count": 4,
+  "normal_success_count": 4,
+  "normal_success_rate": 1.0,
+  "stop_request_count": 0,
+  "stop_clean_completion_count": 0,
+  "stop_clean_completion_rate": 1.0,
+  "stop_signal_count": 0,
+  "stop_signal_rate": 0.0,
+  "users_with_successful_normal_chat_count": 1,
+  "users_with_successful_normal_chat_rate": 1.0,
+  "availability_passed": true,
+  "availability_failed_checks": [],
+  "ttft_ms": {
+    "p50": 432.80500000000006,
+    "p90": 637.6448,
+    "p95": 675.1874,
+    "p99": 705.2214799999999
+  },
+  "wall_time_ms": {
+    "p50": 22979.15058900253,
+    "p90": 29930.637877990375,
+    "p95": 30146.07800598751,
+    "p99": 30318.43010838522
+  },
+  "generation_duration_ms": {
+    "p50": 22389.993000000002,
+    "p90": 29433.4243,
+    "p95": 29695.34215,
+    "p99": 29904.876430000004
+  },
+  "output_tps": {
+    "p50": 13.978833159765392,
+    "p90": 14.347611749243939,
+    "p95": 14.416314329496162,
+    "p99": 14.471276393697941
+  },
+  "average_total_tokens": 811.5,
+  "session_rollover_count": 1,
+  "average_turns_per_session": 2.0,
+  "natural_completion_rate": 1.0,
+  "disturbance_stop_rate": 0.0,
+  "post_stop_next_turn_success_rate": 1.0,
+  "stop_success_rate": 0.0,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 2.0,
+  "average_success_requests_before_user_limit": 4.0,
+  "average_tokens_before_user_limit": 3246.0,
+  "users_deleted": 1,
+  "smoke_result": null
+}

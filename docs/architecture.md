@@ -15,6 +15,8 @@ The project runs as a single-node mixed deployment:
   - `Nginx`
   - `Prometheus`
   - `Grafana`
+  - `Loki`
+  - `Promtail`
   - `node-exporter`
   - `postgres-exporter`
   - `redis-exporter`
@@ -27,6 +29,7 @@ Request flow:
 3. `Chainlit` -> `LiteLLM`
 4. `LiteLLM` -> `vLLM`
 5. `Chainlit` / `Admin` / `LiteLLM` -> `PostgreSQL` / `Redis`
+6. `Prometheus` / `Loki` / `Grafana` observe host services and containers
 
 ## Core Application Boundaries
 
@@ -45,6 +48,9 @@ Request flow:
 - CSV import preview + confirm
 - Single global quota policy management
 - Read-only session max token display
+- Ops summary at `/admin/ops`
+- Prometheus-backed summary/alerts APIs
+- Loki-backed log preview APIs
 
 ### `ncoai_shared`
 
@@ -84,7 +90,7 @@ LiteLLM writes its own operational tables into the same PostgreSQL instance. The
 
 ## Quota Model
 
-- Session limit: single thread cumulative token usage, default `8192`
+- Session limit: single thread cumulative token usage, default `2048`
 - User limit: cumulative settled assistant usage inside the active global quota window
 - `Redis` is the hot-path reservation/cache layer
 - `PostgreSQL` is the final correctness ledger
@@ -96,6 +102,8 @@ LiteLLM writes its own operational tables into the same PostgreSQL instance. The
 
 - `devctl + tmux` manages host processes
 - `docker compose` manages infrastructure containers
+- `Grafana` is the main ops dashboard
+- `Promtail` collects both compose logs and `.local/devctl/logs/*.log`
 - Initialization is independent from runtime startup:
   - `init-host`
   - `init-infra`

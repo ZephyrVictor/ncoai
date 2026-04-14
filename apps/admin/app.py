@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +13,7 @@ from zoneinfo import ZoneInfo
 import tiktoken
 from redis.asyncio import Redis
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -19,11 +21,29 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from database import create_app_engine
+from ops_service import load_ops_alerts, load_ops_logs, load_ops_summary
+from ncoai_shared.bootstrap import (
+    bootstrap_team_token_auth_config as bootstrap_team_token_config,
+)
 from ncoai_shared.bootstrap import sync_global_quota_policy_cache as sync_global_cache
-from ncoai_shared.controlplane import ControlPlaneRepository
+from ncoai_shared.bootstrap import (
+    sync_team_token_auth_config_cache as sync_team_token_cache,
+)
+from ncoai_shared.controlplane import (
+    TEAM_TOKEN_IDENTIFIER_PREFIX,
+    ControlPlaneRepository,
+)
+from ncoai_shared.gzctf_team_token import resolve_public_key_base64
+from ncoai_shared.monitoring import AppMetrics
 from ncoai_shared.security import hash_password, verify_password
+from ncoai_shared.team_token_auth import (
+    TEAM_TOKEN_AUTH_EVENTS_CHANNEL,
+    build_team_token_auth_event,
+)
 from settings import SETTINGS
+from vllm_redundancy import VLLMRedundancyController
 
+LOGGER = logging.getLogger("ncoai.admin")
 APP_DIR = Path(__file__).resolve().parent
 DISPLAY_TZ = ZoneInfo(SETTINGS.display_timezone)
 ENGINE = create_app_engine(SETTINGS.database_async_url)
@@ -53,7 +73,9 @@ REPOSITORY = ControlPlaneRepository(
     ENGINE,
     minimum_available_tokens_for_request=MINIMUM_USER_REQUEST_TOKENS,
 )
+APP_METRICS = AppMetrics("admin")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+VLLM_REDUNDANCY_CONTROLLER: VLLMRedundancyController | None = None
 
 
 def format_datetime(value: str | None) -> str:
@@ -78,6 +100,30 @@ def format_number(value: int | None) -> str:
     if value is None:
         return "-"
     return f"{value:,}"
+
+
+def decorate_subject(subject: dict[str, Any] | None) -> dict[str, Any] | None:
+    if subject is None:
+        return None
+
+    row = dict(subject)
+    auth_source = (
+        "team-token"
+        if str(row.get("identifier", "")).startswith(TEAM_TOKEN_IDENTIFIER_PREFIX)
+        else "managed-user"
+    )
+    row["auth_source"] = auth_source
+    row["auth_label"] = "Team Token" if auth_source == "team-token" else "密码"
+    row["is_password_editable"] = auth_source != "team-token"
+    if not row.get("display_name") and auth_source == "team-token":
+        parts = str(row["identifier"]).split(":")
+        if len(parts) >= 3 and parts[-1].isdigit():
+            row["display_name"] = f"Team #{parts[-1]}"
+    return row
+
+
+async def sync_admin_subjects() -> None:
+    await REPOSITORY.sync_team_token_subjects()
 
 
 templates.env.filters["format_datetime"] = format_datetime
@@ -109,6 +155,10 @@ class ImportPayload(BaseModel):
     confirm: bool = False
 
 
+class TeamTokenAuthPayload(BaseModel):
+    public_key: str
+
+
 def parse_local_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -130,12 +180,74 @@ async def sync_global_quota_policy_cache(
     return await sync_global_cache(ENGINE, REDIS, policy=policy)
 
 
+async def sync_team_token_auth_config_cache(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    return await sync_team_token_cache(ENGINE, REDIS, config=config)
+
+
+async def get_team_token_auth_config() -> dict[str, Any] | None:
+    config = await REPOSITORY.get_team_token_auth_config()
+    if config is not None:
+        return config
+
+    try:
+        config = await bootstrap_team_token_config(
+            ENGINE,
+            public_key_base64=os.getenv("GZCTF_FIXED_GAME_PUBLIC_KEY"),
+            private_key_base64=os.getenv("GZCTF_FIXED_GAME_PRIVATE_KEY"),
+        )
+    except ValueError as exc:
+        LOGGER.warning("Failed to bootstrap team token auth config: %s", exc)
+        return None
+    if config is not None:
+        await sync_team_token_auth_config_cache(config)
+    return config
+
+
+def normalize_team_token_auth_payload(payload: TeamTokenAuthPayload) -> dict[str, Any]:
+    try:
+        public_key = resolve_public_key_base64(payload.public_key, "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"public_key": public_key}
+
+
+async def publish_team_token_auth_config_update(config: dict[str, Any]) -> None:
+    await REDIS.publish(
+        TEAM_TOKEN_AUTH_EVENTS_CHANNEL,
+        build_team_token_auth_event(config),
+    )
+
+
+def build_vllm_redundancy_controller() -> VLLMRedundancyController:
+    return VLLMRedundancyController(
+        settings=SETTINGS,
+        redis=REDIS,
+        metrics=APP_METRICS,
+        logger=LOGGER,
+    )
+
+
+def get_vllm_redundancy_controller() -> VLLMRedundancyController:
+    global VLLM_REDUNDANCY_CONTROLLER
+    if VLLM_REDUNDANCY_CONTROLLER is None:
+        VLLM_REDUNDANCY_CONTROLLER = build_vllm_redundancy_controller()
+    return VLLM_REDUNDANCY_CONTROLLER
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    controller = get_vllm_redundancy_controller()
     await REDIS.ping()
-    yield
-    await REDIS.close()
-    await ENGINE.dispose()
+    if controller.monitoring_enabled():
+        await controller.start()
+    try:
+        yield
+    finally:
+        await controller.stop()
+        await REDIS.close()
+        await ENGINE.dispose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -145,6 +257,11 @@ app.mount(
     StaticFiles(directory=str(APP_DIR / "static")),
     name="admin-static",
 )
+
+
+@app.middleware("http")
+async def instrument_requests(request: Request, call_next) -> Response:
+    return await APP_METRICS.instrument_http(request, call_next)
 
 
 def admin_authenticated(request: Request) -> bool:
@@ -166,6 +283,7 @@ def base_context(request: Request, **kwargs: Any) -> dict[str, Any]:
         "root_path": SETTINGS.root_path,
         "admin_username": request.session.get("admin_username"),
         "model_max_tokens": SETTINGS.model_max_tokens,
+        "team_token_fixed_game_id": SETTINGS.team_token_fixed_game_id,
         "page_title": kwargs.pop("page_title", "NCO LLM CHAT"),
     }
     context.update(kwargs)
@@ -349,6 +467,11 @@ async def healthz() -> JSONResponse:
     )
 
 
+@app.get(f"{SETTINGS.root_path}/metrics")
+async def metrics() -> Response:
+    return APP_METRICS.render_metrics()
+
+
 @app.get(f"{SETTINGS.root_path}", include_in_schema=False)
 async def root_admin(request: Request) -> RedirectResponse:
     if admin_authenticated(request):
@@ -370,8 +493,13 @@ async def login_page(request: Request) -> HTMLResponse:
 async def users_page(request: Request, edit: str | None = None) -> HTMLResponse:
     if not admin_authenticated(request):
         return redirect_to_login()
+    await sync_admin_subjects()
     users = await REPOSITORY.list_managed_users()
-    edit_user = await REPOSITORY.get_managed_user(edit, include_deleted=True) if edit else None
+    edit_user = (
+        decorate_subject(await REPOSITORY.get_managed_user(edit, include_deleted=True))
+        if edit
+        else None
+    )
     edit_usage = None
     if edit:
         try:
@@ -422,6 +550,66 @@ async def quota_policies_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get(f"{SETTINGS.root_path}/team-token-auth", response_class=HTMLResponse)
+async def team_token_auth_page(request: Request) -> HTMLResponse:
+    if not admin_authenticated(request):
+        return redirect_to_login()
+    config = await get_team_token_auth_config()
+    return templates.TemplateResponse(
+        "team_token_auth.html",
+        base_context(
+            request,
+            page_title="NCO LLM CHAT Team Token Auth",
+            team_token_auth_config=config,
+        ),
+    )
+
+
+@app.get(f"{SETTINGS.root_path}/ops", response_class=HTMLResponse)
+async def ops_page(request: Request) -> HTMLResponse:
+    if not admin_authenticated(request):
+        return redirect_to_login()
+
+    summary = await load_ops_summary(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+        grafana_url=SETTINGS.monitoring_grafana_url,
+    )
+    alerts = await load_ops_alerts(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+    )
+    logs = await load_ops_logs(
+        loki_url=SETTINGS.monitoring_loki_url,
+        limit=30,
+    )
+    return templates.TemplateResponse(
+        "ops.html",
+        base_context(
+            request,
+            page_title="NCO LLM CHAT Ops",
+            ops_summary=summary,
+            ops_alerts=alerts,
+            ops_logs=logs,
+            grafana_url=SETTINGS.monitoring_grafana_url,
+        ),
+    )
+
+
+@app.get(f"{SETTINGS.root_path}/vllm-redundancy", response_class=HTMLResponse)
+async def vllm_redundancy_page(request: Request) -> HTMLResponse:
+    if not admin_authenticated(request):
+        return redirect_to_login()
+
+    payload = await get_vllm_redundancy_controller().load_payload()
+    return templates.TemplateResponse(
+        "vllm_redundancy.html",
+        base_context(
+            request,
+            page_title="NCO LLM CHAT vLLM Redundancy",
+            vllm_redundancy=payload,
+        ),
+    )
+
+
 @app.post(f"{SETTINGS.root_path}/api/auth/login")
 async def login_api(request: Request, payload: LoginPayload) -> JSONResponse:
     admin_account = await REPOSITORY.get_admin_account(payload.username.strip())
@@ -430,8 +618,10 @@ async def login_api(request: Request, payload: LoginPayload) -> JSONResponse:
         or not admin_account.get("is_active")
         or not verify_password(payload.password, admin_account.get("password_hash", ""))
     ):
+        APP_METRICS.record_auth_attempt("admin-password", "failure")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     request.session["admin_username"] = payload.username.strip()
+    APP_METRICS.record_auth_attempt("admin-password", "success")
     return JSONResponse({"ok": True, "username": payload.username.strip()})
 
 
@@ -444,6 +634,7 @@ async def logout_api(request: Request) -> JSONResponse:
 @app.get(f"{SETTINGS.root_path}/api/users")
 async def list_users_api(request: Request) -> JSONResponse:
     require_admin_api(request)
+    await sync_admin_subjects()
     users = await REPOSITORY.list_managed_users()
     return JSONResponse({"items": users})
 
@@ -470,11 +661,12 @@ async def create_user_api(request: Request, payload: UserPayload) -> JSONRespons
 @app.get(f"{SETTINGS.root_path}/api/users/{{identifier}}")
 async def get_user_api(request: Request, identifier: str) -> JSONResponse:
     require_admin_api(request)
+    await sync_admin_subjects()
     user = await REPOSITORY.get_managed_user(identifier, include_deleted=True)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     usage = await REPOSITORY.get_user_usage(identifier)
-    return JSONResponse({"user": user, "usage": usage})
+    return JSONResponse({"user": decorate_subject(user), "usage": usage})
 
 
 @app.patch(f"{SETTINGS.root_path}/api/users/{{identifier}}")
@@ -484,11 +676,14 @@ async def update_user_api(
     payload: UserPayload,
 ) -> JSONResponse:
     require_admin_api(request)
+    await sync_admin_subjects()
     data = normalize_user_payload(payload)
     existing = await REPOSITORY.get_managed_user(identifier, include_deleted=True)
     if not existing:
         raise HTTPException(status_code=404, detail="User not found")
-    password_hash = hash_password(data["password"]) if data["password"] else None
+    password_hash = None
+    if data["password"] and not identifier.startswith(TEAM_TOKEN_IDENTIFIER_PREFIX):
+        password_hash = hash_password(data["password"])
     await REPOSITORY.update_managed_user(
         identifier,
         display_name=data["display_name"],
@@ -501,6 +696,7 @@ async def update_user_api(
 @app.delete(f"{SETTINGS.root_path}/api/users/{{identifier}}")
 async def delete_user_api(request: Request, identifier: str) -> JSONResponse:
     require_admin_api(request)
+    await sync_admin_subjects()
     user = await REPOSITORY.get_managed_user(identifier, include_deleted=True)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -622,29 +818,94 @@ async def update_quota_policy_api(request: Request, payload: PolicyPayload) -> J
     return JSONResponse({"ok": True, "id": policy["id"], "item": policy})
 
 
-@app.get(f"{SETTINGS.root_path}/api/monitoring/summary")
-async def monitoring_summary_api(_: Request) -> JSONResponse:
-    return JSONResponse(
-        {
-            "ok": False,
-            "implemented": False,
-            "detail": "Monitoring is out of scope for this delivery.",
-        },
-        status_code=501,
+@app.get(f"{SETTINGS.root_path}/api/team-token-auth")
+async def get_team_token_auth_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    config = await get_team_token_auth_config()
+    return JSONResponse({"item": config})
+
+
+@app.put(f"{SETTINGS.root_path}/api/team-token-auth")
+async def update_team_token_auth_api(
+    request: Request,
+    payload: TeamTokenAuthPayload,
+) -> JSONResponse:
+    require_admin_api(request)
+    data = normalize_team_token_auth_payload(payload)
+    config, changed = await REPOSITORY.upsert_team_token_auth_config(
+        public_key=data["public_key"],
     )
+    await sync_team_token_auth_config_cache(config)
+    if changed:
+        await publish_team_token_auth_config_update(config)
+    return JSONResponse({"ok": True, "changed": changed, "item": config})
+
+
+@app.get(f"{SETTINGS.root_path}/api/vllm-redundancy")
+async def get_vllm_redundancy_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    payload = await get_vllm_redundancy_controller().load_payload()
+    return JSONResponse(payload)
+
+
+@app.post(f"{SETTINGS.root_path}/api/vllm-redundancy/ping")
+async def ping_vllm_redundancy_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    payload = await get_vllm_redundancy_controller().refresh_now(
+        reason="manual-ping",
+        allow_restart=False,
+    )
+    return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/ops/summary")
+async def ops_summary_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    payload = await load_ops_summary(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+        grafana_url=SETTINGS.monitoring_grafana_url,
+    )
+    return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/ops/alerts")
+async def ops_alerts_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    payload = await load_ops_alerts(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+    )
+    return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/ops/logs")
+async def ops_logs_api(
+    request: Request,
+    service: str | None = None,
+    level: str | None = None,
+    q: str | None = None,
+    hours: int = 24,
+    limit: int = 50,
+) -> JSONResponse:
+    require_admin_api(request)
+    payload = await load_ops_logs(
+        loki_url=SETTINGS.monitoring_loki_url,
+        service=service,
+        level=level,
+        text_query=q,
+        hours=hours,
+        limit=limit,
+    )
+    return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/monitoring/summary")
+async def monitoring_summary_api(request: Request) -> JSONResponse:
+    return await ops_summary_api(request)
 
 
 @app.get(f"{SETTINGS.root_path}/api/monitoring/alerts")
-async def monitoring_alerts_api(_: Request) -> JSONResponse:
-    return JSONResponse(
-        {
-            "ok": False,
-            "implemented": False,
-            "detail": "Monitoring is out of scope for this delivery.",
-            "items": [],
-        },
-        status_code=501,
-    )
+async def monitoring_alerts_api(request: Request) -> JSONResponse:
+    return await ops_alerts_api(request)
 
 
 @app.get(f"{SETTINGS.root_path}/users/import-template.csv")

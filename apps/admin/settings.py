@@ -41,6 +41,23 @@ class AdminSettings:
     prompt_safety_tokens: int
     tiktoken_encoding: str
     display_timezone: str
+    monitoring_prometheus_url: str
+    monitoring_loki_url: str
+    monitoring_grafana_url: str
+    team_token_fixed_game_id: int
+    vllm_host: str
+    vllm_port: int
+    served_model_name: str
+    vllm_failover_enabled: bool
+    vllm_backup_origin: str
+    vllm_primary_request_timeout_seconds: float
+    vllm_backup_request_timeout_seconds: float
+    vllm_redundancy_probe_interval_seconds: float
+    vllm_redundancy_probe_timeout_seconds: float
+    vllm_redundancy_restart_cooldown_seconds: int
+    vllm_redundancy_restart_max_attempts: int
+    vllm_redundancy_restart_window_seconds: int
+    vllm_redundancy_restart_command_timeout_seconds: float
 
 
 def load_settings() -> AdminSettings:
@@ -72,7 +89,7 @@ def load_settings() -> AdminSettings:
             "BOOTSTRAP_GLOBAL_QUOTA_WINDOW_END",
             "2099-12-31T23:59:59+00:00",
         ),
-        model_max_tokens=int(os.getenv("MAX_MODEL_LEN", "8192")),
+        model_max_tokens=int(os.getenv("MAX_MODEL_LEN", "2048")),
         system_prompt=os.getenv(
             "CHAINLIT_SYSTEM_PROMPT",
             "You are a concise and helpful assistant.",
@@ -85,6 +102,49 @@ def load_settings() -> AdminSettings:
             "cl100k_base",
         ),
         display_timezone=os.getenv("ADMIN_APP_DISPLAY_TIMEZONE", "Asia/Shanghai"),
+        monitoring_prometheus_url=os.getenv(
+            "ADMIN_MONITORING_PROMETHEUS_URL",
+            "http://127.0.0.1:9090",
+        ),
+        monitoring_loki_url=os.getenv(
+            "ADMIN_MONITORING_LOKI_URL",
+            "http://127.0.0.1:3101",
+        ),
+        monitoring_grafana_url=os.getenv(
+            "ADMIN_MONITORING_GRAFANA_URL",
+            "/grafana/",
+        ),
+        team_token_fixed_game_id=int(os.getenv("GZCTF_FIXED_GAME_ID", "0")),
+        vllm_host=os.getenv("VLLM_HOST", "127.0.0.1"),
+        vllm_port=int(os.getenv("VLLM_PORT", "12233")),
+        served_model_name=os.getenv("SERVED_MODEL_NAME", "qwen35b"),
+        vllm_failover_enabled=os.getenv("VLLM_FAILOVER_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        vllm_backup_origin=os.getenv("VLLM_BACKUP_ORIGIN", "").strip(),
+        vllm_primary_request_timeout_seconds=float(
+            os.getenv("VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS", "2.5")
+        ),
+        vllm_backup_request_timeout_seconds=float(
+            os.getenv("VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS", "5.0")
+        ),
+        vllm_redundancy_probe_interval_seconds=float(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_PROBE_INTERVAL_SECONDS", "600")
+        ),
+        vllm_redundancy_probe_timeout_seconds=float(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_PROBE_TIMEOUT_SECONDS", "3")
+        ),
+        vllm_redundancy_restart_cooldown_seconds=int(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_RESTART_COOLDOWN_SECONDS", "120")
+        ),
+        vllm_redundancy_restart_max_attempts=int(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_RESTART_MAX_ATTEMPTS", "3")
+        ),
+        vllm_redundancy_restart_window_seconds=int(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_RESTART_WINDOW_SECONDS", "900")
+        ),
+        vllm_redundancy_restart_command_timeout_seconds=float(
+            os.getenv("ADMIN_VLLM_REDUNDANCY_RESTART_COMMAND_TIMEOUT_SECONDS", "180")
+        ),
     )
 
 

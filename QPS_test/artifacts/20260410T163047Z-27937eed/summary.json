@@ -1,0 +1,78 @@
+{
+  "run_id": "20260410T163047Z-27937eed",
+  "started_at": "2026-04-10T18:12:48.958922+00:00",
+  "finished_at": "2026-04-10T18:18:06.302090+00:00",
+  "wall_time_seconds": 317.343168,
+  "target_rps": 20,
+  "actual_average_rps": 10.855755999763637,
+  "actual_peak_rps": 35,
+  "total_requests": 3445,
+  "success_count": 3337,
+  "failure_count": 108,
+  "failure_type_counts": {
+    "quota_blocked": 66,
+    "timeout": 42
+  },
+  "blocked_user_count": 0,
+  "transport_failure_count": 42,
+  "transport_failure_rate": 0.012191582002902757,
+  "aborted_due_to_log_cap": false,
+  "log_cap_warning_triggered": false,
+  "log_size_bytes": 41710058,
+  "behavior_counts": {
+    "stop": 160,
+    "normal": 3285
+  },
+  "behavior_success_counts": {
+    "stop": 157,
+    "normal": 3180
+  },
+  "normal_request_count": 3285,
+  "normal_success_count": 3180,
+  "normal_success_rate": 0.9680365296803652,
+  "stop_request_count": 160,
+  "stop_clean_completion_count": 157,
+  "stop_clean_completion_rate": 0.98125,
+  "stop_signal_count": 17,
+  "stop_signal_rate": 0.10625,
+  "users_with_successful_normal_chat_count": 120,
+  "users_with_successful_normal_chat_rate": 1.0,
+  "availability_passed": false,
+  "availability_failed_checks": [
+    "normal chat success rate below 99%",
+    "transport failure rate above 1%"
+  ],
+  "ttft_ms": {
+    "p50": 9445.256000000001,
+    "p90": 24259.353,
+    "p95": 24875.836499999998,
+    "p99": 27977.258250000014
+  },
+  "wall_time_ms": {
+    "p50": 3065.3330470013316,
+    "p90": 5294.120420400577,
+    "p95": 28436.186660798558,
+    "p99": 66743.05982427785
+  },
+  "average_total_tokens": 567.1271186440678,
+  "stop_success_rate": 0.98125,
+  "thread_switch_success_rate": 0.0,
+  "average_threads_per_user": 1.4333333333333333,
+  "average_success_requests_before_user_limit": 27.808333333333334,
+  "average_tokens_before_user_limit": 1115.35,
+  "users_deleted": 0,
+  "smoke_result": {
+    "success": false,
+    "login_ok": true,
+    "stream_ok": true,
+    "stop_ok": false,
+    "thread_switch_ok": false,
+    "screenshots": [
+      "01-first-thread.png"
+    ],
+    "notes": [
+      "Locator.wait_for: Timeout 5000ms exceeded.\nCall log:\n  - waiting for get_by_text(\"已停止\") to be visible\n"
+    ]
+  },
+  "abort_reason": "recent transport failure ratio reached 0.35 over 60 requests"
+}

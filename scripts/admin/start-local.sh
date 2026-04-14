@@ -26,7 +26,7 @@ require_env_vars \
 source "$ROOT_DIR/.venv/bin/activate"
 export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
 
-if ! python -c "import fastapi, uvicorn, jinja2, bcrypt, multipart, sqlalchemy" >/dev/null 2>&1; then
+if ! python -c "import fastapi, uvicorn, jinja2, itsdangerous, bcrypt, multipart, prometheus_client, sqlalchemy" >/dev/null 2>&1; then
   echo "[ERROR] Admin runtime dependencies are missing in .venv" >&2
   echo "Run: bash scripts/deploy/init-host.sh" >&2
   exit 1

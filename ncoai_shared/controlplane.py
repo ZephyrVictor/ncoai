@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ncoai_shared.team_token_auth import TEAM_TOKEN_AUTH_CONFIG_KEY
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -32,6 +34,10 @@ class EffectiveQuotaPolicy:
     total_token_limit: int
     is_active: bool
     policy_version: int
+
+
+TEAM_TOKEN_IDENTIFIER_PREFIX = "gzctf-team:"
+TEAM_TOKEN_AUTH_PASSWORD_HASH = "!team-token-auth!"
 
 
 GET_ADMIN_ACCOUNT_SQL = text(
@@ -156,6 +162,25 @@ LIST_USER_USAGE_SUMMARIES_SQL = text(
     SELECT user_identifier, used_tokens, reserved_tokens, limit_tokens,
            policy_version, window_start, window_end, updated_at
     FROM quota_user_summary
+    """
+)
+
+LIST_TEAM_TOKEN_CHAT_USERS_SQL = text(
+    """
+    SELECT
+        identifier,
+        COALESCE(
+            NULLIF(metadata ->> 'display_name', ''),
+            CASE
+                WHEN NULLIF(metadata ->> 'team_id', '') IS NOT NULL
+                THEN 'Team #' || (metadata ->> 'team_id')
+                ELSE identifier
+            END
+        ) AS display_name
+    FROM users
+    WHERE identifier LIKE :identifier_prefix
+       OR COALESCE(metadata ->> 'auth_source', '') = 'team-token'
+    ORDER BY identifier ASC
     """
 )
 
@@ -437,6 +462,74 @@ UPSERT_USER_WINDOW_SUMMARY_SQL = text(
     """
 )
 
+GET_TEAM_TOKEN_AUTH_CONFIG_SQL = text(
+    """
+    SELECT config_key, public_key, config_version, created_at, updated_at
+    FROM team_token_auth_config
+    WHERE config_key = :config_key
+    """
+)
+
+INSERT_TEAM_TOKEN_AUTH_CONFIG_SQL = text(
+    """
+    INSERT INTO team_token_auth_config (
+        config_key,
+        public_key,
+        config_version,
+        created_at,
+        updated_at
+    ) VALUES (
+        :config_key,
+        :public_key,
+        :config_version,
+        :created_at,
+        :updated_at
+    )
+    """
+)
+
+UPDATE_TEAM_TOKEN_AUTH_CONFIG_SQL = text(
+    """
+    UPDATE team_token_auth_config
+    SET public_key = :public_key,
+        config_version = :config_version,
+        updated_at = :updated_at
+    WHERE config_key = :config_key
+    """
+)
+
+INSERT_CAPS_SUBMISSION_SQL = text(
+    """
+    INSERT INTO caps_submissions (
+        id,
+        user_identifier,
+        game_id,
+        team_id,
+        player_name,
+        original_filename,
+        stored_filename,
+        relative_path,
+        file_extension,
+        content_type,
+        file_size_bytes,
+        created_at
+    ) VALUES (
+        :id,
+        :user_identifier,
+        :game_id,
+        :team_id,
+        :player_name,
+        :original_filename,
+        :stored_filename,
+        :relative_path,
+        :file_extension,
+        :content_type,
+        :file_size_bytes,
+        :created_at
+    )
+    """
+)
+
 
 class ControlPlaneRepository:
     def __init__(
@@ -488,6 +581,54 @@ class ControlPlaneRepository:
                 },
             )
 
+    async def sync_team_token_subjects(self) -> int:
+        created = 0
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            team_rows = list(
+                (
+                    await conn.execute(
+                        LIST_TEAM_TOKEN_CHAT_USERS_SQL,
+                        {
+                            "identifier_prefix": f"{TEAM_TOKEN_IDENTIFIER_PREFIX}%",
+                        },
+                    )
+                ).mappings()
+            )
+            existing_identifiers = {
+                row["identifier"]
+                for row in (
+                    await conn.execute(
+                        LIST_MANAGED_USERS_SQL,
+                        {"include_deleted": True},
+                    )
+                ).mappings()
+            }
+
+            for row in team_rows:
+                identifier = str(row["identifier"])
+                if identifier in existing_identifiers:
+                    continue
+
+                await conn.execute(
+                    UPSERT_MANAGED_USER_SQL,
+                    {
+                        "identifier": identifier,
+                        "display_name": self._subject_display_name(
+                            identifier,
+                            row.get("display_name"),
+                        ),
+                        "password_hash": TEAM_TOKEN_AUTH_PASSWORD_HASH,
+                        "is_active": True,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                existing_identifiers.add(identifier)
+                created += 1
+
+        return created
+
     async def bootstrap_global_quota_policy(
         self,
         total_token_limit: int,
@@ -532,6 +673,149 @@ class ControlPlaneRepository:
                 },
             )
             await conn.execute(DELETE_NON_GLOBAL_POLICIES_SQL)
+
+    async def get_team_token_auth_config(self) -> dict[str, Any] | None:
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    GET_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                    {"config_key": TEAM_TOKEN_AUTH_CONFIG_KEY},
+                )
+            ).mappings().first()
+        return self._serialize_team_token_auth_config(row)
+
+    async def bootstrap_team_token_auth_config(
+        self,
+        public_key: str,
+    ) -> dict[str, Any]:
+        normalized_public_key = str(public_key).strip()
+        if not normalized_public_key:
+            raise ValueError("public_key is required")
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    GET_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                    {"config_key": TEAM_TOKEN_AUTH_CONFIG_KEY},
+                )
+            ).mappings().first()
+            if row:
+                serialized = self._serialize_team_token_auth_config(row)
+                if serialized is None:
+                    raise RuntimeError("Team token auth config bootstrap failed")
+                return serialized
+            await conn.execute(
+                INSERT_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                {
+                    "config_key": TEAM_TOKEN_AUTH_CONFIG_KEY,
+                    "public_key": normalized_public_key,
+                    "config_version": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+        config = await self.get_team_token_auth_config()
+        if config is None:
+            raise RuntimeError("Team token auth config bootstrap failed")
+        return config
+
+    async def upsert_team_token_auth_config(
+        self,
+        *,
+        public_key: str,
+    ) -> tuple[dict[str, Any], bool]:
+        normalized_public_key = str(public_key).strip()
+        if not normalized_public_key:
+            raise ValueError("public_key is required")
+        changed = False
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    GET_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                    {"config_key": TEAM_TOKEN_AUTH_CONFIG_KEY},
+                )
+            ).mappings().first()
+            if row:
+                current_public_key = str(row.get("public_key") or "").strip()
+                next_version = int(row.get("config_version") or 0)
+                if current_public_key != normalized_public_key:
+                    next_version += 1
+                    changed = True
+                    await conn.execute(
+                        UPDATE_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                        {
+                            "config_key": TEAM_TOKEN_AUTH_CONFIG_KEY,
+                            "public_key": normalized_public_key,
+                            "config_version": next_version,
+                            "updated_at": now,
+                        },
+                    )
+            else:
+                changed = True
+                await conn.execute(
+                    INSERT_TEAM_TOKEN_AUTH_CONFIG_SQL,
+                    {
+                        "config_key": TEAM_TOKEN_AUTH_CONFIG_KEY,
+                        "public_key": normalized_public_key,
+                        "config_version": 1,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+        config = await self.get_team_token_auth_config()
+        if config is None:
+            raise RuntimeError("Team token auth config update failed")
+        return config, changed
+
+    async def create_caps_submission(
+        self,
+        *,
+        user_identifier: str,
+        game_id: int,
+        team_id: int,
+        player_name: str,
+        original_filename: str,
+        stored_filename: str,
+        relative_path: str,
+        file_extension: str,
+        content_type: str | None,
+        file_size_bytes: int,
+    ) -> dict[str, Any]:
+        submission_id = str(uuid.uuid4())
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                INSERT_CAPS_SUBMISSION_SQL,
+                {
+                    "id": submission_id,
+                    "user_identifier": user_identifier,
+                    "game_id": game_id,
+                    "team_id": team_id,
+                    "player_name": player_name,
+                    "original_filename": original_filename,
+                    "stored_filename": stored_filename,
+                    "relative_path": relative_path,
+                    "file_extension": file_extension,
+                    "content_type": content_type,
+                    "file_size_bytes": file_size_bytes,
+                    "created_at": now,
+                },
+            )
+        return {
+            "id": submission_id,
+            "user_identifier": user_identifier,
+            "game_id": game_id,
+            "team_id": team_id,
+            "player_name": player_name,
+            "original_filename": original_filename,
+            "stored_filename": stored_filename,
+            "relative_path": relative_path,
+            "file_extension": file_extension,
+            "content_type": content_type,
+            "file_size_bytes": file_size_bytes,
+            "created_at": serialize_datetime(now),
+        }
 
     async def get_admin_account(self, username: str) -> dict[str, Any] | None:
         async with self._engine.begin() as conn:
@@ -646,25 +930,27 @@ class ControlPlaneRepository:
                 quota_state = "ok"
 
             result.append(
-                {
-                    "identifier": identifier,
-                    "display_name": row["display_name"],
-                    "is_active": bool(row["is_active"]),
-                    "is_deleted": bool(row["is_deleted"]),
-                    "created_at": serialize_datetime(row["created_at"]),
-                    "updated_at": serialize_datetime(row["updated_at"]),
-                    "deleted_at": serialize_datetime(row["deleted_at"]),
-                    "last_login_at": serialize_datetime(row["last_login_at"]),
-                    "last_active_at": serialize_datetime(activity.get("last_active_at")),
-                    "thread_count_total": int(activity.get("thread_count_total") or 0),
-                    "active_threads_24h": int(activity.get("active_threads_24h") or 0),
-                    "used_tokens": used_tokens,
-                    "reserved_tokens": reserved_tokens,
-                    "current_limit_tokens": policy_limit_tokens,
-                    "remaining_tokens": remaining_tokens,
-                    "quota_state": quota_state,
-                    "effective_policy": self._serialize_policy(global_policy),
-                }
+                self._decorate_subject_row(
+                    {
+                        "identifier": identifier,
+                        "display_name": row["display_name"],
+                        "is_active": bool(row["is_active"]),
+                        "is_deleted": bool(row["is_deleted"]),
+                        "created_at": serialize_datetime(row["created_at"]),
+                        "updated_at": serialize_datetime(row["updated_at"]),
+                        "deleted_at": serialize_datetime(row["deleted_at"]),
+                        "last_login_at": serialize_datetime(row["last_login_at"]),
+                        "last_active_at": serialize_datetime(activity.get("last_active_at")),
+                        "thread_count_total": int(activity.get("thread_count_total") or 0),
+                        "active_threads_24h": int(activity.get("active_threads_24h") or 0),
+                        "used_tokens": used_tokens,
+                        "reserved_tokens": reserved_tokens,
+                        "current_limit_tokens": policy_limit_tokens,
+                        "remaining_tokens": remaining_tokens,
+                        "quota_state": quota_state,
+                        "effective_policy": self._serialize_policy(global_policy),
+                    }
+                )
             )
         return result
 
@@ -981,6 +1267,37 @@ class ControlPlaneRepository:
                 return row
         raise KeyError(user_identifier)
 
+    def _decorate_subject_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        identifier = str(row["identifier"])
+        auth_source = (
+            "team-token"
+            if identifier.startswith(TEAM_TOKEN_IDENTIFIER_PREFIX)
+            else "managed-user"
+        )
+        next_row = dict(row)
+        next_row["display_name"] = self._subject_display_name(
+            identifier,
+            row.get("display_name"),
+        )
+        next_row["auth_source"] = auth_source
+        next_row["auth_label"] = "Team Token" if auth_source == "team-token" else "密码"
+        next_row["is_password_editable"] = auth_source != "team-token"
+        return next_row
+
+    def _subject_display_name(
+        self,
+        identifier: str,
+        display_name: Any,
+    ) -> str:
+        normalized = str(display_name or "").strip()
+        if normalized:
+            return normalized
+        if identifier.startswith(TEAM_TOKEN_IDENTIFIER_PREFIX):
+            parts = identifier.split(":")
+            if len(parts) >= 3 and parts[-1].isdigit():
+                return f"Team #{parts[-1]}"
+        return identifier
+
     async def create_import_job(
         self,
         *,
@@ -1070,6 +1387,26 @@ class ControlPlaneRepository:
         serialized = dict(policy)
         serialized["window_start"] = serialize_datetime(serialized.get("window_start"))
         serialized["window_end"] = serialize_datetime(serialized.get("window_end"))
+        serialized["created_at"] = serialize_datetime(serialized.get("created_at"))
+        serialized["updated_at"] = serialize_datetime(serialized.get("updated_at"))
+        return serialized
+
+    def _serialize_team_token_auth_config(
+        self,
+        row: dict[str, Any] | Any | None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        serialized = dict(row)
+        public_key = str(serialized.get("public_key") or "").strip()
+        if not public_key:
+            return None
+        serialized["config_key"] = (
+            str(serialized.get("config_key") or TEAM_TOKEN_AUTH_CONFIG_KEY).strip()
+            or TEAM_TOKEN_AUTH_CONFIG_KEY
+        )
+        serialized["public_key"] = public_key
+        serialized["config_version"] = int(serialized.get("config_version") or 0)
         serialized["created_at"] = serialize_datetime(serialized.get("created_at"))
         serialized["updated_at"] = serialize_datetime(serialized.get("updated_at"))
         return serialized

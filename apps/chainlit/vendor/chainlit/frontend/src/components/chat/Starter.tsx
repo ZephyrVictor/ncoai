@@ -25,10 +25,10 @@ export default function Starter({ starter }: StarterProps) {
   const selectedCommand = useRecoilValue(persistentCommandState);
   const modes = useRecoilValue(modesState);
   const { sendMessage } = useChatInteract();
-  const { loading, connected } = useChatData();
+  const { connected, isGenerating } = useChatData();
   const { user } = useAuth();
 
-  const disabled = loading || !connected;
+  const disabled = isGenerating || !connected;
 
   const onSubmit = useCallback(async () => {
     // Build modes dict: only include modes that have selections

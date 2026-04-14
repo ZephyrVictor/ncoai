@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -10,9 +11,12 @@ from chainlit.socket import (
     _get_token_from_cookie,
     clean_session,
     load_user_env,
+    message,
     persist_user_session,
+    process_message,
     restore_existing_session,
     resume_thread,
+    stop,
 )
 
 
@@ -481,3 +485,98 @@ class TestSocketEdgeCases:
                 # Should propagate the exception
                 with pytest.raises(Exception, match="Auth error"):
                     await _authenticate_connection(environ)
+
+
+class TestChatTaskLifecycle:
+    @pytest.mark.asyncio
+    async def test_client_message_rejected_when_task_is_active(self):
+        mock_session = Mock(spec=WebsocketSession)
+        mock_task = Mock()
+        mock_task.done.return_value = False
+        mock_session.current_task = mock_task
+        mock_session.stop_requested = False
+        mock_session.active_generation_assistant_message_id = None
+
+        mock_emitter = AsyncMock()
+        mock_context = Mock(emitter=mock_emitter)
+
+        with patch.object(WebsocketSession, "require") as mock_require:
+            with patch("chainlit.socket.init_ws_context") as mock_init_context:
+                mock_require.return_value = mock_session
+                mock_init_context.return_value = mock_context
+
+                await message(
+                    "socket_123",
+                    {
+                        "message": {
+                            "id": "user-message-id",
+                            "type": "user_message",
+                            "output": "hello",
+                        },
+                        "fileReferences": None,
+                        "assistantMessageId": "assistant-message-id",
+                    },
+                )
+
+        mock_emitter.send_toast.assert_awaited_once_with(
+            "当前正在生成，请等待或先停止", type="info"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_task_without_sending_manual_message(self):
+        mock_session = Mock(spec=WebsocketSession)
+        mock_task = Mock()
+        mock_task.done.return_value = False
+        mock_session.current_task = mock_task
+        mock_session.stop_requested = False
+
+        with patch.object(WebsocketSession, "get") as mock_get:
+            with patch("chainlit.socket.init_ws_context"):
+                with patch("chainlit.socket.Message.send", new_callable=AsyncMock) as mock_send:
+                    with patch("chainlit.socket.config") as mock_config:
+                        mock_get.return_value = mock_session
+                        mock_config.code.on_stop = AsyncMock()
+
+                        await stop("socket_123")
+
+        assert mock_session.stop_requested is True
+        mock_task.cancel.assert_called_once()
+        mock_send.assert_not_called()
+        mock_config.code.on_stop.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_message_clears_current_task_state(self):
+        mock_session = Mock(spec=WebsocketSession)
+        mock_session.stop_requested = True
+        mock_session.active_generation_assistant_message_id = "assistant-message-id"
+
+        mock_message = Mock()
+        mock_emitter = AsyncMock()
+        mock_emitter.process_message.return_value = mock_message
+        mock_context = Mock(emitter=mock_emitter)
+
+        with patch("chainlit.socket.init_ws_context") as mock_init_context:
+            with patch("chainlit.socket.config") as mock_config:
+                mock_init_context.return_value = mock_context
+                mock_config.code.on_message = AsyncMock()
+                mock_session.current_task = asyncio.current_task()
+
+                await process_message(
+                    mock_session,
+                    {
+                        "message": {
+                            "id": "user-message-id",
+                            "type": "user_message",
+                            "output": "hello",
+                        },
+                        "fileReferences": None,
+                        "assistantMessageId": "assistant-message-id",
+                    },
+                )
+
+        assert mock_session.current_task is None
+        assert mock_session.stop_requested is False
+        assert mock_session.active_generation_assistant_message_id is None
+        mock_emitter.task_start.assert_awaited_once()
+        mock_emitter.task_end.assert_awaited_once()
+        mock_config.code.on_message.assert_awaited_once_with(mock_message)

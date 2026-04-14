@@ -1,0 +1,11 @@
+{
+  "success": false,
+  "login_ok": true,
+  "stream_ok": false,
+  "stop_ok": false,
+  "thread_switch_ok": false,
+  "screenshots": [],
+  "notes": [
+    "Timeout 30000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation to \"**/thread/**\" until 'load'\n============================================================"
+  ]
+}

@@ -28,7 +28,7 @@ interface Props {
 const MessagesContainer = ({ navigate }: Props) => {
   const apiClient = useContext(ChainlitContext);
   const { config } = useConfig();
-  const { elements, askUser, loading, actions } = useChatData();
+  const { elements, askUser, loading, actions, generation } = useChatData();
   const { messages } = useChatMessages();
   const { uploadFile: _uploadFile } = useChatInteract();
   const setMessages = useSetRecoilState(messagesState);
@@ -115,6 +115,7 @@ const MessagesContainer = ({ navigate }: Props) => {
   const onError = useCallback((error: string) => toast.error(error), [toast]);
 
   const enableFeedback = false;
+  const showLoadingIndicators = loading && generation.phase !== 'stopping';
 
   // Memoize the context object since it's created on each render.
   // This prevents unnecessary re-renders of children components when no props have changed.
@@ -126,7 +127,7 @@ const MessagesContainer = ({ navigate }: Props) => {
       latex: config?.features?.latex,
       renderUserMarkdown: config?.features?.user_message_markdown,
       editable: !!config?.features.edit_message,
-      loading,
+      loading: showLoadingIndicators,
       showFeedbackButtons: enableFeedback,
       uiName: config?.ui?.name || '',
       cot: config?.ui?.cot || 'hidden',
@@ -138,7 +139,7 @@ const MessagesContainer = ({ navigate }: Props) => {
   }, [
     askUser,
     enableFeedback,
-    loading,
+    showLoadingIndicators,
     config?.ui?.name,
     config?.ui?.cot,
     config?.features?.unsafe_allow_html,
@@ -152,7 +153,7 @@ const MessagesContainer = ({ navigate }: Props) => {
     <MessageContext.Provider value={memoizedContext}>
       <Messages
         indent={0}
-        isRunning={loading}
+        isRunning={showLoadingIndicators}
         messages={messages}
         elements={elements}
         actions={actions}
