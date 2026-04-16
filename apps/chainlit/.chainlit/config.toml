@@ -3,6 +3,7 @@ user_env = []
 session_timeout = 3600
 user_session_timeout = 1296000
 cache = false
+transports = ["websocket"]
 persist_user_env = false
 mask_user_env = true
 allow_origins = ["*"]

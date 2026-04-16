@@ -1,8 +1,14 @@
 events {}
 
 http {
+  map $http_cookie $chainlit_sticky_key {
+    "~*(?:^|;\\s*)X-Chainlit-Session-id=([^;]+)" $1;
+    default "$remote_addr|$http_user_agent";
+  }
+
   upstream chainlit_upstream {
-    server 127.0.0.1:${CHAINLIT_PORT};
+    hash $chainlit_sticky_key consistent;
+${CHAINLIT_UPSTREAM_SERVERS}
   }
 
   upstream admin_upstream {

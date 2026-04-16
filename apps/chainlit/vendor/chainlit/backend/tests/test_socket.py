@@ -10,6 +10,7 @@ from chainlit.socket import (
     _get_token,
     _get_token_from_cookie,
     clean_session,
+    connect,
     load_user_env,
     message,
     persist_user_session,
@@ -193,6 +194,38 @@ class TestResumeThread:
             result = await resume_thread(mock_session)
 
             assert result is None
+
+
+class TestConnect:
+    @pytest.mark.asyncio
+    async def test_connect_authorizes_thread_via_cached_author_lookup(self):
+        mock_user = Mock(identifier="user123")
+        mock_data_layer = AsyncMock()
+        mock_data_layer.get_thread_author = AsyncMock(return_value="user123")
+
+        with patch("chainlit.socket.require_login", return_value=True):
+            with patch(
+                "chainlit.socket._authenticate_connection",
+                AsyncMock(return_value=(mock_user, "token-1")),
+            ):
+                with patch("chainlit.socket.get_data_layer", return_value=mock_data_layer):
+                    with patch("chainlit.socket.restore_existing_session", return_value=False):
+                        with patch("chainlit.socket.WebsocketSession") as mock_session:
+                            result = await connect(
+                                "sid-1",
+                                {"HTTP_COOKIE": "token=token-1"},
+                                {
+                                    "sessionId": "session-1",
+                                    "threadId": "thread-1",
+                                    "clientType": "webapp",
+                                    "userEnv": "{}",
+                                },
+                            )
+
+        assert result is True
+        mock_data_layer.get_thread_author.assert_awaited_once_with("thread-1")
+        mock_data_layer.get_thread.assert_not_called()
+        mock_session.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_resume_thread_without_user(self):

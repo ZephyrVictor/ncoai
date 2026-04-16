@@ -291,6 +291,17 @@ async def test_post_team_token_login_rejects_invalid_signature(team_token_mode) 
 
 
 @pytest.mark.asyncio
+async def test_post_team_token_login_rejects_malformed_signature(team_token_mode) -> None:
+    request = build_json_request({"teamToken": "17:not-base64!!"})
+
+    response = await chainlit_app.post_team_token_login(request)
+    payload = json.loads(response.body)
+
+    assert response.status_code == 401
+    assert payload["detail"] == "invalid team token"
+
+
+@pytest.mark.asyncio
 async def test_ensure_team_token_subject_bootstraps_managed_user(monkeypatch) -> None:
     user = chainlit_app.build_team_user(2026, 17)
     repository = SimpleNamespace(

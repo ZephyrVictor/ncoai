@@ -114,6 +114,29 @@ def test_load_settings_reads_litellm_runtime_env(monkeypatch) -> None:
     assert loaded.litellm.queue_timeout_seconds == 6.5
 
 
+def test_load_settings_splits_shared_capacities_per_worker(monkeypatch) -> None:
+    monkeypatch.setenv("CHAINLIT_WORKER_COUNT", "4")
+    monkeypatch.setenv("CHAINLIT_WORKER_INDEX", "2")
+    monkeypatch.setenv("CHAINLIT_DB_POOL_SIZE", "160")
+    monkeypatch.setenv("CHAINLIT_DB_MAX_OVERFLOW", "96")
+    monkeypatch.setenv("CHAINLIT_OPENAI_MAX_CONNECTIONS", "512")
+    monkeypatch.setenv("CHAINLIT_OPENAI_MAX_KEEPALIVE_CONNECTIONS", "256")
+    monkeypatch.setenv("CHAINLIT_LITELLM_MAX_CONCURRENT_REQUESTS", "220")
+    monkeypatch.setenv("CHAINLIT_STREAM_SNAPSHOT_INTERVAL_SECONDS", "2")
+
+    loaded = chainlit_settings.load_settings()
+
+    assert loaded.runtime.worker_count == 4
+    assert loaded.runtime.worker_index == 2
+    assert loaded.runtime.worker_id == "chainlit-2"
+    assert loaded.runtime.stream_snapshot_interval_seconds == 2.0
+    assert loaded.database.pool.size == 40
+    assert loaded.database.pool.max_overflow == 24
+    assert loaded.litellm.max_connections == 128
+    assert loaded.litellm.max_keepalive_connections == 64
+    assert loaded.litellm.max_concurrent_requests == 55
+
+
 def test_build_async_engine_kwargs_reflect_pool_settings() -> None:
     pool_settings = chainlit_settings.DatabasePoolSettings(
         size=20,
@@ -199,6 +222,70 @@ async def test_quota_service_does_not_dispose_shared_engine() -> None:
 
 
 @pytest.mark.asyncio
+async def test_quota_settle_avoids_reaggregating_window_usage(monkeypatch) -> None:
+    service = chainlit_quota.QuotaService(
+        "postgresql+asyncpg://user:pass@localhost/db",
+        settings=chainlit_quota.SETTINGS,
+        engine=object(),
+    )
+    reservation = chainlit_quota.QuotaReservation(
+        request_id="request-1",
+        step_id="step-1",
+        thread_id="thread-1",
+        user_identifier="user-1",
+        prompt_tokens=32,
+        reserved_tokens=96,
+        allowed_completion_tokens=64,
+        thread_summary=chainlit_quota.QuotaSummary(used_tokens=10, reserved_tokens=0, limit_tokens=1024),
+        user_summary=chainlit_quota.QuotaSummary(used_tokens=20, reserved_tokens=0, limit_tokens=100000),
+    )
+    thread_summary = chainlit_quota.QuotaSummary(used_tokens=42, reserved_tokens=0, limit_tokens=1024)
+    user_summary = chainlit_quota.QuotaSummary(used_tokens=84, reserved_tokens=0, limit_tokens=100000)
+    sum_user_window_usage = AsyncMock(return_value=999)
+
+    monkeypatch.setattr(service, "_ensure_ready", AsyncMock())
+    service._redis = SimpleNamespace(eval=AsyncMock(return_value=[1]))
+    monkeypatch.setattr(
+        service,
+        "_persist_settlement",
+        AsyncMock(return_value=(thread_summary, user_summary)),
+    )
+    monkeypatch.setattr(
+        service._config_provider,
+        "get_thread_limit",
+        AsyncMock(return_value=chainlit_quota.QuotaConfig(limit_tokens=1024)),
+    )
+    monkeypatch.setattr(
+        service._config_provider,
+        "get_user_limit",
+        AsyncMock(return_value=chainlit_quota.QuotaConfig(limit_tokens=100000)),
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_hot_summary",
+        AsyncMock(side_effect=[thread_summary, user_summary]),
+    )
+    monkeypatch.setattr(service, "_set_hot_summary", AsyncMock())
+    monkeypatch.setattr(service, "_persist_thread_metadata", AsyncMock())
+    monkeypatch.setattr(service, "_apply_user_summary_status", lambda summary, config: summary)
+    monkeypatch.setattr(
+        service._repository,
+        "sum_user_window_usage",
+        sum_user_window_usage,
+    )
+
+    settlement = await service.settle(
+        reservation=reservation,
+        provider_request_id="provider-1",
+        assistant_content="hello world",
+        usage=SimpleNamespace(prompt_tokens=32, completion_tokens=52, total_tokens=84),
+    )
+
+    assert settlement.total_tokens == 84
+    sum_user_window_usage.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_update_step_avoids_redundant_thread_upsert(monkeypatch) -> None:
     data_layer = chainlit_database.ConfiguredSQLAlchemyDataLayer(
         "postgresql+asyncpg://user:pass@localhost/db",
@@ -258,6 +345,38 @@ async def test_create_step_still_ensures_thread_exists(monkeypatch) -> None:
 
     update_thread.assert_awaited_once_with("thread-1")
     execute_sql.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_streaming_update_only_invalidates_thread_detail(monkeypatch) -> None:
+    data_layer = chainlit_database.ConfiguredSQLAlchemyDataLayer(
+        "postgresql+asyncpg://user:pass@localhost/db",
+        engine=object(),
+        storage_provider=None,
+        cache_settings=chainlit_settings.DataCacheSettings(enabled=True, ttl_seconds=15),
+        cache_url="redis://example/0",
+    )
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(data_layer, "_cache", fake_redis)
+    monkeypatch.setattr(data_layer, "_get_cache", AsyncMock(return_value=fake_redis))
+    monkeypatch.setattr(data_layer, "execute_sql", AsyncMock())
+
+    await chainlit_database.ConfiguredSQLAlchemyDataLayer.update_step.__wrapped__(
+        data_layer,
+        {
+            "id": "step-1",
+            "threadId": "thread-1",
+            "name": "Assistant",
+            "type": "assistant_message",
+            "output": "hello",
+            "metadata": {},
+            "generation": {},
+            "streaming": True,
+        },
+    )
+
+    assert fake_redis.store[data_layer._thread_version_cache_key("thread-1")] == "1"
+    assert data_layer._thread_list_version_cache_key("user-1") not in fake_redis.store
 
 
 @pytest.mark.asyncio

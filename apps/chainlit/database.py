@@ -166,7 +166,11 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
         cache = await self._get_cache()
         if cache is None:
             return
-        await cache.set(key, json.dumps(value, ensure_ascii=False), ex=self._cache_ttl_seconds())
+        await cache.set(
+            key,
+            json.dumps(value, ensure_ascii=False),
+            ex=self._cache_ttl_seconds(),
+        )
 
     async def _cache_get_int(self, key: str) -> int:
         cache = await self._get_cache()
@@ -226,6 +230,8 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
         thread_id: str | None,
         user_id: str | None = None,
         user_identifier: str | None = None,
+        invalidate_thread_detail: bool = True,
+        invalidate_thread_list: bool = True,
         drop_owner_cache: bool = False,
     ) -> None:
         if not thread_id:
@@ -236,7 +242,9 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
 
         resolved_user_id = user_id
         resolved_user_identifier = user_identifier
-        if resolved_user_id is None or resolved_user_identifier is None:
+        if invalidate_thread_list and (
+            resolved_user_id is None or resolved_user_identifier is None
+        ):
             owner = await self._resolve_thread_owner(thread_id)
             resolved_user_id = resolved_user_id or owner.get("user_id")
             resolved_user_identifier = resolved_user_identifier or owner.get(
@@ -244,12 +252,23 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
             )
 
         pipe = cache.pipeline(transaction=False)
-        pipe.incr(self._thread_version_cache_key(thread_id))
-        if resolved_user_id:
+        if invalidate_thread_detail:
+            pipe.incr(self._thread_version_cache_key(thread_id))
+        if invalidate_thread_list and resolved_user_id:
             pipe.incr(self._thread_list_version_cache_key(resolved_user_id))
         if drop_owner_cache:
             pipe.delete(self._thread_owner_cache_key(thread_id))
         await pipe.execute()
+
+    def _step_requires_thread_list_invalidation(self, step_dict: "StepDict") -> bool:
+        if bool(step_dict.get("streaming")):
+            return False
+        metadata = step_dict.get("metadata") or {}
+        if isinstance(metadata, dict):
+            status = str(metadata.get("generation_status") or "").strip().lower()
+            if status in {"pending", "queued"}:
+                return False
+        return True
 
     async def _lookup_thread_id_for_step(self, step_id: str) -> str | None:
         result = await self.execute_sql(
@@ -449,7 +468,13 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
         if self.show_logger:
             logger.info(f"SQLAlchemy: update_step, step_id={step_dict.get('id')}")
         await self._upsert_step(step_dict)
-        await self._invalidate_thread_views(thread_id=step_dict.get("threadId"))
+        await self._invalidate_thread_views(
+            thread_id=step_dict.get("threadId"),
+            invalidate_thread_detail=True,
+            invalidate_thread_list=self._step_requires_thread_list_invalidation(
+                step_dict
+            ),
+        )
 
     async def update_thread(
         self,

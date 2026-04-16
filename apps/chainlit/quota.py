@@ -628,17 +628,6 @@ return {1}
             self._user_key(reservation.user_identifier),
             user_config,
         )
-        if user_config.status == "ok":
-            user_summary.used_tokens = await self._repository.sum_user_window_usage(
-                reservation.user_identifier,
-                window_start=self._deserialize_datetime(user_config.window_start),
-                window_end=self._deserialize_datetime(user_config.window_end),
-            )
-            user_summary.limit_tokens = user_config.limit_tokens
-            user_summary.policy_version = user_config.policy_version
-            user_summary.window_start = user_config.window_start
-            user_summary.window_end = user_config.window_end
-            user_summary.updated_at = utcnow_iso()
         thread_summary.used_tokens = max(
             thread_summary.used_tokens,
             reservation.thread_summary.used_tokens + total_tokens,
@@ -647,6 +636,11 @@ return {1}
             user_summary.used_tokens,
             reservation.user_summary.used_tokens + total_tokens,
         )
+        user_summary.limit_tokens = user_config.limit_tokens
+        user_summary.policy_version = user_config.policy_version
+        user_summary.window_start = user_config.window_start
+        user_summary.window_end = user_config.window_end
+        user_summary.updated_at = utcnow_iso()
         await self._set_hot_summary(
             self._thread_key(reservation.thread_id),
             thread_summary,

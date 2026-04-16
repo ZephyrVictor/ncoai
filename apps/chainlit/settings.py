@@ -29,6 +29,14 @@ def build_redis_url() -> str:
     return f"redis://{host}:{port}/{db}"
 
 
+def per_worker_capacity(total: int, worker_count: int, *, minimum: int = 1) -> int:
+    if worker_count <= 1:
+        return max(total, minimum)
+    if total <= 0:
+        return minimum
+    return max(total // worker_count, minimum)
+
+
 @dataclass(frozen=True, slots=True)
 class DatabasePoolSettings:
     size: int
@@ -67,6 +75,14 @@ class LiteLLMSettings:
     max_keepalive_connections: int
     max_concurrent_requests: int
     queue_timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSettings:
+    worker_count: int
+    worker_index: int
+    worker_id: str
+    stream_snapshot_interval_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +162,7 @@ class AppSettings:
     data_cache: DataCacheSettings
     redis: RedisSettings
     litellm: LiteLLMSettings
+    runtime: RuntimeSettings
     models: ModelSettings
     auth: AuthSettings
     admin: AdminSettings
@@ -160,13 +177,26 @@ def load_settings() -> AppSettings:
         "DATABASE_URL",
         "postgresql://ncoai:ncoai_dev@127.0.0.1:55432/ncoai_chat",
     )
+    worker_count = max(int(os.getenv("CHAINLIT_WORKER_COUNT", "1")), 1)
+    worker_index = max(int(os.getenv("CHAINLIT_WORKER_INDEX", "1")), 1)
+    worker_id = os.getenv(
+        "CHAINLIT_WORKER_ID",
+        f"chainlit-{worker_index}",
+    ).strip() or f"chainlit-{worker_index}"
     return AppSettings(
         database=DatabaseSettings(
             url=database_url,
             async_url=normalize_postgres_url(database_url),
             pool=DatabasePoolSettings(
-                size=int(os.getenv("CHAINLIT_DB_POOL_SIZE", "128")),
-                max_overflow=int(os.getenv("CHAINLIT_DB_MAX_OVERFLOW", "64")),
+                size=per_worker_capacity(
+                    int(os.getenv("CHAINLIT_DB_POOL_SIZE", "128")),
+                    worker_count,
+                ),
+                max_overflow=per_worker_capacity(
+                    int(os.getenv("CHAINLIT_DB_MAX_OVERFLOW", "64")),
+                    worker_count,
+                    minimum=0,
+                ),
                 timeout_seconds=float(
                     os.getenv("CHAINLIT_DB_POOL_TIMEOUT_SECONDS", "15")
                 ),
@@ -182,6 +212,20 @@ def load_settings() -> AppSettings:
             ttl_seconds=int(os.getenv("CHAINLIT_DATA_CACHE_TTL_SECONDS", "15")),
         ),
         redis=RedisSettings(url=build_redis_url()),
+        runtime=RuntimeSettings(
+            worker_count=worker_count,
+            worker_index=worker_index,
+            worker_id=worker_id,
+            stream_snapshot_interval_seconds=max(
+                float(
+                    os.getenv(
+                        "CHAINLIT_STREAM_SNAPSHOT_INTERVAL_SECONDS",
+                        "0.75",
+                    )
+                ),
+                0.1,
+            ),
+        ),
         litellm=LiteLLMSettings(
             base_url=os.getenv(
                 "CHAINLIT_LITELLM_BASE_URL",
@@ -193,22 +237,22 @@ def load_settings() -> AppSettings:
             ),
             timeout_seconds=float(os.getenv("CHAINLIT_OPENAI_TIMEOUT", "180")),
             max_retries=max(int(os.getenv("CHAINLIT_OPENAI_MAX_RETRIES", "0")), 0),
-            max_connections=max(
+            max_connections=per_worker_capacity(
                 int(os.getenv("CHAINLIT_OPENAI_MAX_CONNECTIONS", "256")),
-                1,
+                worker_count,
             ),
-            max_keepalive_connections=max(
+            max_keepalive_connections=per_worker_capacity(
                 int(
                     os.getenv(
                         "CHAINLIT_OPENAI_MAX_KEEPALIVE_CONNECTIONS",
                         "128",
                     )
                 ),
-                1,
+                worker_count,
             ),
-            max_concurrent_requests=max(
+            max_concurrent_requests=per_worker_capacity(
                 int(os.getenv("CHAINLIT_LITELLM_MAX_CONCURRENT_REQUESTS", "160")),
-                1,
+                worker_count,
             ),
             queue_timeout_seconds=max(
                 float(os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "8")),

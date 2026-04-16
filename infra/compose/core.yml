@@ -83,6 +83,8 @@ services:
       NGINX_SSL_CERT: ${NGINX_SSL_CERT:-}
       NGINX_SSL_KEY: ${NGINX_SSL_KEY:-}
       CHAINLIT_PORT: ${CHAINLIT_PORT:-3100}
+      CHAINLIT_WORKER_COUNT: ${CHAINLIT_WORKER_COUNT:-4}
+      CHAINLIT_WORKER_BASE_PORT: ${CHAINLIT_WORKER_BASE_PORT:-3100}
       ADMIN_APP_PORT: ${ADMIN_APP_PORT:-3200}
     volumes:
       - ../nginx/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
@@ -106,6 +108,16 @@ services:
           echo "[ERROR] NGINX_PUBLIC_HTTP_PORT and NGINX_PUBLIC_HTTPS_PORT must differ." >&2
           exit 1
         fi
+        chainlit_worker_count="$${CHAINLIT_WORKER_COUNT:-1}"
+        chainlit_worker_base_port="$${CHAINLIT_WORKER_BASE_PORT:-$${CHAINLIT_PORT:-3100}}"
+        chainlit_upstream_servers=""
+        i=0
+        while [ "$$i" -lt "$$chainlit_worker_count" ]; do
+          port=$$((chainlit_worker_base_port + i))
+          chainlit_upstream_servers="$${chainlit_upstream_servers}    server 127.0.0.1:$${port};\n"
+          i=$$((i + 1))
+        done
+        export CHAINLIT_UPSTREAM_SERVERS="$$(printf '%b' "$$chainlit_upstream_servers")"
 
         if [ "${NGINX_ENABLE_TLS:-0}" = "1" ]; then
           if [ -z "${NGINX_SSL_CERT:-}" ] || [ -z "${NGINX_SSL_KEY:-}" ]; then
@@ -116,15 +128,15 @@ services:
             echo "[ERROR] TLS certificate files not found: ${NGINX_SSL_CERT} / ${NGINX_SSL_KEY}" >&2
             exit 1
           fi
-          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$ADMIN_APP_PORT $$GRAFANA_PORT $$NGINX_SERVER_NAME $$NGINX_PUBLIC_HTTP_PORT $$NGINX_PUBLIC_HTTPS_PORT $$NGINX_ACME_WEBROOT $$NGINX_SSL_CERT $$NGINX_SSL_KEY' \
+          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$CHAINLIT_UPSTREAM_SERVERS $$ADMIN_APP_PORT $$GRAFANA_PORT $$NGINX_SERVER_NAME $$NGINX_PUBLIC_HTTP_PORT $$NGINX_PUBLIC_HTTPS_PORT $$NGINX_ACME_WEBROOT $$NGINX_SSL_CERT $$NGINX_SSL_KEY' \
             < /etc/nginx/templates/nginx.tls.conf.template \
             > /etc/nginx/nginx.conf
         elif [ "${NGINX_SERVER_NAME:-_}" != "_" ]; then
-          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$ADMIN_APP_PORT $$GRAFANA_PORT $$NGINX_SERVER_NAME $$NGINX_PUBLIC_HTTP_PORT $$NGINX_ACME_WEBROOT' \
+          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$CHAINLIT_UPSTREAM_SERVERS $$ADMIN_APP_PORT $$GRAFANA_PORT $$NGINX_SERVER_NAME $$NGINX_PUBLIC_HTTP_PORT $$NGINX_ACME_WEBROOT' \
             < /etc/nginx/templates/nginx.public-http.conf.template \
             > /etc/nginx/nginx.conf
         else
-          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$ADMIN_APP_PORT $$GRAFANA_PORT' \
+          envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$CHAINLIT_UPSTREAM_SERVERS $$ADMIN_APP_PORT $$GRAFANA_PORT' \
             < /etc/nginx/templates/nginx.conf.template \
             > /etc/nginx/nginx.conf
         fi

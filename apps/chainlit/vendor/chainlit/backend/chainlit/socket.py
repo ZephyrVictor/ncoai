@@ -146,8 +146,15 @@ async def connect(sid: str, environ: WSGIEnvironment, auth: WebSocketSessionAuth
 
         if thread_id:
             if data_layer := get_data_layer():
-                thread = await data_layer.get_thread(thread_id)
-                if thread and not (thread["userIdentifier"] == user.identifier):
+                thread_author = None
+                get_thread_author = getattr(data_layer, "get_thread_author", None)
+                if callable(get_thread_author):
+                    thread_author = await get_thread_author(thread_id)
+                else:
+                    thread = await data_layer.get_thread(thread_id)
+                    if thread:
+                        thread_author = thread.get("userIdentifier")
+                if thread_author and thread_author != user.identifier:
                     logger.error("Authorization for the thread failed.")
                     raise ConnectionRefusedError("authorization failed")
 

@@ -8,6 +8,13 @@ VENDOR_DIR="$APP_DIR/vendor/chainlit"
 source "$ROOT_DIR/scripts/deploy/common.sh"
 source_env_files host
 
+worker_index="${CHAINLIT_WORKER_INDEX:-1}"
+worker_id="${CHAINLIT_WORKER_ID:-chainlit}"
+worker_base_port="${CHAINLIT_WORKER_BASE_PORT:-${CHAINLIT_PORT:-3100}}"
+if [[ "$worker_index" =~ ^[0-9]+$ ]] && (( worker_index > 0 )); then
+  export CHAINLIT_PORT="$((worker_base_port + worker_index - 1))"
+fi
+
 if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
   echo "[ERROR] Root virtualenv is missing: $ROOT_DIR/.venv" >&2
   echo "Create it with: uv venv $ROOT_DIR/.venv --python 3.11" >&2
@@ -42,7 +49,7 @@ python "$ROOT_DIR/scripts/deploy/check_runtime.py" \
   --require-db \
   --require-redis
 
-echo "[INFO] Starting Chainlit on http://${CHAINLIT_HOST}:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}"
+echo "[INFO] Starting Chainlit worker ${worker_id} (index=${worker_index}) on http://${CHAINLIT_HOST}:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}"
 exec chainlit run "$APP_DIR/app.py" \
   --headless \
   --host "$CHAINLIT_HOST" \

@@ -90,6 +90,8 @@ TEAM_TOKEN_AUTH_CACHE_REDIS: Redis | None = None
 TEAM_TOKEN_AUTH_EVENTS_TASK: asyncio.Task[None] | None = None
 TEAM_TOKEN_AUTH_LAST_VERSION = 0
 CAPS_FTP_RUNTIME: CapsFTPServerRuntime | None = None
+CHAINLIT_WORKER_ID = SETTINGS.runtime.worker_id
+CHAINLIT_WORKER_COUNT = SETTINGS.runtime.worker_count
 LITELLM_MAX_CONNECTIONS = max(SETTINGS.litellm.max_connections, 1)
 LITELLM_MAX_KEEPALIVE_CONNECTIONS = min(
     max(SETTINGS.litellm.max_keepalive_connections, 1),
@@ -113,6 +115,13 @@ LITELLM_REQUEST_SEMAPHORE = asyncio.Semaphore(
     max(SETTINGS.litellm.max_concurrent_requests, 1)
 )
 
+LOGGER.info(
+    "Configured Chainlit runtime worker_id=%s worker_index=%s worker_count=%s snapshot_interval=%ss",
+    CHAINLIT_WORKER_ID,
+    SETTINGS.runtime.worker_index,
+    CHAINLIT_WORKER_COUNT,
+    SETTINGS.runtime.stream_snapshot_interval_seconds,
+)
 LOGGER.info(
     "Configured Chainlit DB pool size=%s max_overflow=%s timeout=%ss recycle=%ss pre_ping=%s use_lifo=%s",
     SETTINGS.database.pool.size,
@@ -140,7 +149,9 @@ except Exception as exc:  # pragma: no cover - operational path
 
 @chainlit_app.middleware("http")
 async def instrument_requests(request: Request, call_next) -> Response:
-    return await APP_METRICS.instrument_http(request, call_next)
+    response = await APP_METRICS.instrument_http(request, call_next)
+    response.headers["X-NCOAI-Chainlit-Worker"] = CHAINLIT_WORKER_ID
+    return response
 
 
 @cl.data_layer
@@ -939,11 +950,16 @@ async def post_team_token_login(request: Request) -> JSONResponse:
         APP_METRICS.record_auth_attempt("team-token", "failure")
         return JSONResponse({"detail": str(exc)}, status_code=503)
 
-    if not verify_gzctf_team_token(
-        parsed_team_token.team_id,
-        parsed_team_token.signature,
-        str(team_token_auth_config.get("public_key") or ""),
-    ):
+    try:
+        token_verified = verify_gzctf_team_token(
+            parsed_team_token.team_id,
+            parsed_team_token.signature,
+            str(team_token_auth_config.get("public_key") or ""),
+        )
+    except ValueError:
+        token_verified = False
+
+    if not token_verified:
         APP_METRICS.record_auth_attempt("team-token", "failure")
         return JSONResponse({"detail": "invalid team token"}, status_code=401)
 
@@ -1118,6 +1134,12 @@ async def startup_caps_runtime() -> None:
 
     if not caps_enabled():
         return
+    if SETTINGS.runtime.worker_index != 1:
+        LOGGER.info(
+            "Skipping CAPS FTP runtime on %s; worker 1 owns the shared listener",
+            CHAINLIT_WORKER_ID,
+        )
+        return
 
     ensure_caps_storage_root_ready(caps_game_root())
     runtime = build_caps_ftp_runtime()
@@ -1171,17 +1193,13 @@ async def shutdown_application_runtime() -> None:
 
 async def chainlit_app_startup() -> None:
     await startup_team_token_auth_runtime()
-    await startup_caps_runtime()
 
 
 async def chainlit_app_shutdown() -> None:
     try:
-        await shutdown_caps_runtime()
+        await shutdown_team_token_auth_runtime()
     finally:
-        try:
-            await shutdown_team_token_auth_runtime()
-        finally:
-            await shutdown_application_runtime()
+        await shutdown_application_runtime()
 
 
 async def get_my_quota(
@@ -1270,7 +1288,7 @@ async def on_message(message: cl.Message) -> None:
     provider_request_id: str | None = None
     usage = None
     last_snapshot_at = 0.0
-    snapshot_interval_seconds = 0.75
+    snapshot_interval_seconds = SETTINGS.runtime.stream_snapshot_interval_seconds
     stream_delivery_failed = False
     client: AsyncOpenAI | None = None
     stream = None
