@@ -55,6 +55,15 @@ groups:
           summary: Chainlit health check failed.
           description: Prometheus blackbox health checks are failing for Chainlit.
 
+      - alert: NginxHealthCheckFailed
+        expr: probe_success{job="host-service-health",instance=~".*://127.0.0.1:[0-9]+/$"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Nginx health check failed.
+          description: Prometheus blackbox health checks are failing for nginx.
+
       - alert: AdminHealthCheckFailed
         expr: probe_success{job="host-service-health",instance=~".*/admin/healthz"} != 1
         for: 2m
@@ -65,13 +74,13 @@ groups:
           description: Prometheus blackbox health checks are failing for the admin app.
 
       - alert: LiteLLMUnavailable
-        expr: up{job="litellm-metrics"} != 1
+        expr: probe_success{job="host-service-health",instance=~".*://127.0.0.1:[0-9]+/test"} != 1
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: LiteLLM metrics endpoint is unavailable.
-          description: Prometheus cannot scrape LiteLLM metrics.
+          summary: LiteLLM health check failed.
+          description: Prometheus blackbox health checks are failing for LiteLLM.
 
       - alert: VLLMUnavailable
         expr: up{job="vllm-metrics"} != 1
@@ -108,6 +117,15 @@ groups:
         annotations:
           summary: Automatic vLLM restart budget has been exhausted.
           description: Admin redundancy monitoring has paused automatic local vLLM restarts because the retry budget is exhausted.
+
+      - alert: CapsFtpUnavailable
+        expr: probe_success{job="host-service-tcp"} != 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: CAPS FTP is unavailable.
+          description: Prometheus TCP probes cannot connect to the CAPS FTP service.
 
       - alert: ScrapeTargetDown
         expr: up{job=~"admin-metrics|chainlit-metrics|node-exporter|postgres-exporter|redis-exporter"} != 1

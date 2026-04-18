@@ -227,6 +227,39 @@ CHAINLIT_SCHEMA_STATEMENTS = [
     ADD COLUMN IF NOT EXISTS config_version BIGINT NOT NULL DEFAULT 1;
     """,
     """
+    CREATE TABLE IF NOT EXISTS monitor_notification_channels (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        channel_type TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        config_public JSONB NOT NULL DEFAULT '{}'::jsonb,
+        config_secret_ciphertext TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_test_at TIMESTAMPTZ
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS monitor_notification_channels_active_idx
+    ON monitor_notification_channels (is_active, channel_type, created_at DESC);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS monitor_notification_events (
+        id TEXT PRIMARY KEY,
+        monitor_id TEXT NOT NULL,
+        monitor_name TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT NOT NULL,
+        delivery_results JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS monitor_notification_events_monitor_created_idx
+    ON monitor_notification_events (monitor_id, created_at DESC);
+    """,
+    """
     CREATE TABLE IF NOT EXISTS user_import_jobs (
         id TEXT PRIMARY KEY,
         preview_only BOOLEAN NOT NULL DEFAULT TRUE,

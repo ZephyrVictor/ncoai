@@ -5,3 +5,8 @@ modules:
     http:
       preferred_ip_protocol: ip4
       valid_status_codes: [200, 302]
+  tcp_connect:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      preferred_ip_protocol: ip4

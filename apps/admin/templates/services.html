@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h1>服务可用性</h1>
+      <p class="muted">按 10 分钟桶展示最近 24 小时可用率，自动每 60 秒刷新。</p>
+    </div>
+    <div class="actions">
+      <a class="ghost" href="{{ root_path }}/ops">运维总览</a>
+    </div>
+  </div>
+  <div class="muted">
+    更新时间：<span id="services-generated-at">{{ services_availability.generated_at | format_datetime }}</span>
+  </div>
+  {% if services_availability.errors %}
+  <div class="stack status-stack">
+    {% for item in services_availability.errors %}
+    <div class="inline-status error">{{ item }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section id="services-list" class="stack">
+  {% for service in services_availability.services %}
+  <article class="panel service-panel" data-monitor-id="{{ service.id }}">
+    <div class="service-row">
+      <div class="service-meta">
+        <div class="service-title">
+          <span class="availability-pill">
+            {% if service.availability_percent_24h is not none %}
+            {{ service.availability_percent_24h | round(2) }}%
+            {% else %}
+            -
+            {% endif %}
+          </span>
+          <strong>{{ service.name }}</strong>
+          <span class="status-chip status-{{ service.status }}">{{ service.status }}</span>
+        </div>
+        <div class="muted service-detail">
+          {{ service.detail }} 最近检查：{{ service.last_checked_at | format_datetime }}
+        </div>
+      </div>
+      <div class="service-history">
+        <div class="uptime-bars">
+          {% for bucket in service.history_buckets %}
+          <span
+            class="uptime-bar uptime-bar-{{ bucket.status }}"
+            title="{{ bucket.start_at | format_datetime }} - {{ bucket.end_at | format_datetime }}: {{ bucket.status }}"
+          ></span>
+          {% endfor %}
+        </div>
+        <div class="service-scale muted">
+          <span>24h 前</span>
+          <span>现在</span>
+        </div>
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const servicesPageState = {
+    timer: null,
+    pollIntervalMs: ({{ services_availability.poll_interval_seconds | default(60) }} || 60) * 1000,
+  };
+
+  function renderHistoryBars(historyBuckets) {
+    return historyBuckets.map((bucket) => {
+      const title = `${bucket.start_at || '-'} - ${bucket.end_at || '-'}: ${bucket.status}`;
+      return `<span class="uptime-bar uptime-bar-${bucket.status}" title="${title}"></span>`;
+    }).join('');
+  }
+
+  function renderServicePanel(service) {
+    const availability = service.availability_percent_24h == null
+      ? '-'
+      : `${Number(service.availability_percent_24h).toFixed(2)}%`;
+    return `
+      <article class="panel service-panel" data-monitor-id="${service.id}">
+        <div class="service-row">
+          <div class="service-meta">
+            <div class="service-title">
+              <span class="availability-pill">${availability}</span>
+              <strong>${service.name}</strong>
+              <span class="status-chip status-${service.status}">${service.status}</span>
+            </div>
+            <div class="muted service-detail">
+              ${service.detail} 最近检查：${service.last_checked_at || '-'}
+            </div>
+          </div>
+          <div class="service-history">
+            <div class="uptime-bars">${renderHistoryBars(service.history_buckets || [])}</div>
+            <div class="service-scale muted">
+              <span>24h 前</span>
+              <span>现在</span>
+            </div>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  async function refreshServicesAvailability() {
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/services/availability`, {
+        credentials: 'same-origin'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const generatedAt = document.getElementById('services-generated-at');
+      if (generatedAt) generatedAt.textContent = payload.generated_at || '-';
+      const container = document.getElementById('services-list');
+      if (container) {
+        container.innerHTML = (payload.services || []).map(renderServicePanel).join('');
+      }
+    } catch (error) {
+      renderFlash(`服务可用性刷新失败：${error}`, 'error');
+    }
+  }
+
+  servicesPageState.timer = window.setInterval(refreshServicesAvailability, servicesPageState.pollIntervalMs);
+</script>
+{% endblock %}

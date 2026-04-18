@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -523,6 +523,20 @@ async def test_list_threads_cache_invalidates_after_thread_update(monkeypatch) -
         "update_thread",
         update_thread,
     )
+    monkeypatch.setattr(
+        data_layer,
+        "execute_sql",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": "thread-1",
+                    "userId": "user-db-1",
+                    "userIdentifier": "demo-user",
+                    "createdAt": "2026-04-11T00:00:00Z",
+                }
+            ]
+        ),
+    )
     get_user_identifier = AsyncMock(return_value="demo-user")
     monkeypatch.setattr(data_layer, "_get_user_identifer_by_id", get_user_identifier)
 
@@ -544,3 +558,90 @@ async def test_list_threads_cache_invalidates_after_thread_update(monkeypatch) -
     third = await data_layer.list_threads(pagination, filters)
     assert third.data[0]["id"] == "thread-1"
     assert list_threads.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_update_thread_bootstraps_thread_identity(monkeypatch) -> None:
+    data_layer = chainlit_database.ConfiguredSQLAlchemyDataLayer(
+        "postgresql+asyncpg://user:pass@localhost/db",
+        engine=object(),
+        storage_provider=None,
+    )
+    super_update = AsyncMock(return_value=None)
+    invalidate = AsyncMock(return_value=None)
+    store_owner = AsyncMock(return_value=None)
+    get_user_identifier = AsyncMock(return_value="demo-user")
+    execute_sql = AsyncMock(return_value=[])
+    infer_session_user_id = AsyncMock(return_value="user-db-1")
+
+    monkeypatch.setattr(
+        chainlit_database.SQLAlchemyDataLayer,
+        "update_thread",
+        super_update,
+    )
+    monkeypatch.setattr(data_layer, "execute_sql", execute_sql)
+    monkeypatch.setattr(data_layer, "_invalidate_thread_views", invalidate)
+    monkeypatch.setattr(data_layer, "_store_thread_owner", store_owner)
+    monkeypatch.setattr(data_layer, "_get_user_identifer_by_id", get_user_identifier)
+    monkeypatch.setattr(data_layer, "_infer_session_user_id", infer_session_user_id)
+
+    await data_layer.update_thread(
+        thread_id="thread-1",
+        metadata={"chat_profile": "qwen35b_think"},
+    )
+
+    assert super_update.await_args_list == [
+        call(thread_id="thread-1", user_id="user-db-1"),
+        call(
+            thread_id="thread-1",
+            name=None,
+            user_id="user-db-1",
+            metadata={"chat_profile": "qwen35b_think"},
+            tags=None,
+        ),
+    ]
+    store_owner.assert_awaited_once_with(
+        thread_id="thread-1",
+        user_id="user-db-1",
+        user_identifier="demo-user",
+    )
+    invalidate.assert_awaited_once_with(
+        thread_id="thread-1",
+        user_id="user-db-1",
+        user_identifier="demo-user",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_thread_author_recovers_identifier_from_user_id(monkeypatch) -> None:
+    data_layer = chainlit_database.ConfiguredSQLAlchemyDataLayer(
+        "postgresql+asyncpg://user:pass@localhost/db",
+        engine=object(),
+        storage_provider=None,
+        cache_settings=chainlit_settings.DataCacheSettings(enabled=True, ttl_seconds=30),
+        cache_url="redis://cache",
+    )
+    fake_redis = FakeRedis()
+    store_owner = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(data_layer, "_get_cache", AsyncMock(return_value=fake_redis))
+    monkeypatch.setattr(
+        data_layer,
+        "_resolve_thread_owner",
+        AsyncMock(return_value={"user_id": "user-db-1", "user_identifier": None}),
+    )
+    monkeypatch.setattr(
+        data_layer,
+        "_get_user_identifer_by_id",
+        AsyncMock(return_value="demo-user"),
+    )
+    monkeypatch.setattr(data_layer, "_store_thread_owner", store_owner)
+
+    author = await data_layer.get_thread_author("thread-1")
+
+    assert author == "demo-user"
+    store_owner.assert_awaited_once_with(
+        thread_id="thread-1",
+        user_id="user-db-1",
+        user_identifier="demo-user",
+    )

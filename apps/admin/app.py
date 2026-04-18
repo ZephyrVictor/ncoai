@@ -21,6 +21,13 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from database import create_app_engine
+from monitoring_notifications import (
+    SecretCipher,
+    build_secret_cipher,
+    merge_channel_secret_ciphertext,
+    normalize_notification_channel_payload,
+    send_test_notification,
+)
 from ops_service import load_ops_alerts, load_ops_logs, load_ops_summary
 from ncoai_shared.bootstrap import (
     bootstrap_team_token_auth_config as bootstrap_team_token_config,
@@ -39,6 +46,10 @@ from ncoai_shared.security import hash_password, verify_password
 from ncoai_shared.team_token_auth import (
     TEAM_TOKEN_AUTH_EVENTS_CHANNEL,
     build_team_token_auth_event,
+)
+from service_availability import (
+    ServiceAvailabilityController,
+    load_services_availability,
 )
 from settings import SETTINGS
 from vllm_redundancy import VLLMRedundancyController
@@ -76,6 +87,10 @@ REPOSITORY = ControlPlaneRepository(
 APP_METRICS = AppMetrics("admin")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 VLLM_REDUNDANCY_CONTROLLER: VLLMRedundancyController | None = None
+SERVICE_AVAILABILITY_CONTROLLER: ServiceAvailabilityController | None = None
+MONITORING_SECRET_CIPHER: SecretCipher = build_secret_cipher(
+    SETTINGS.monitoring_secret_key
+)
 
 
 def format_datetime(value: str | None) -> str:
@@ -159,6 +174,14 @@ class TeamTokenAuthPayload(BaseModel):
     public_key: str
 
 
+class NotificationChannelPayload(BaseModel):
+    name: str
+    channel_type: str
+    is_active: bool = True
+    config_public: dict[str, Any] = Field(default_factory=dict)
+    config_secret: dict[str, Any] = Field(default_factory=dict)
+
+
 def parse_local_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -236,15 +259,36 @@ def get_vllm_redundancy_controller() -> VLLMRedundancyController:
     return VLLM_REDUNDANCY_CONTROLLER
 
 
+def build_service_availability_controller() -> ServiceAvailabilityController:
+    return ServiceAvailabilityController(
+        settings=SETTINGS,
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+        repository=REPOSITORY,
+        redis=REDIS,
+        logger=LOGGER,
+        secret_cipher=MONITORING_SECRET_CIPHER,
+    )
+
+
+def get_service_availability_controller() -> ServiceAvailabilityController:
+    global SERVICE_AVAILABILITY_CONTROLLER
+    if SERVICE_AVAILABILITY_CONTROLLER is None:
+        SERVICE_AVAILABILITY_CONTROLLER = build_service_availability_controller()
+    return SERVICE_AVAILABILITY_CONTROLLER
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     controller = get_vllm_redundancy_controller()
+    service_controller = get_service_availability_controller()
     await REDIS.ping()
     if controller.monitoring_enabled():
         await controller.start()
+    await service_controller.start()
     try:
         yield
     finally:
+        await service_controller.stop()
         await controller.stop()
         await REDIS.close()
         await ENGINE.dispose()
@@ -565,6 +609,41 @@ async def team_token_auth_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get(f"{SETTINGS.root_path}/services", response_class=HTMLResponse)
+async def services_page(request: Request) -> HTMLResponse:
+    if not admin_authenticated(request):
+        return redirect_to_login()
+    availability = await load_services_availability(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+        settings=SETTINGS,
+    )
+    return templates.TemplateResponse(
+        "services.html",
+        base_context(
+            request,
+            page_title="NCO LLM CHAT Service Availability",
+            services_availability=availability,
+        ),
+    )
+
+
+@app.get(f"{SETTINGS.root_path}/monitoring-notifications", response_class=HTMLResponse)
+async def monitoring_notifications_page(request: Request) -> HTMLResponse:
+    if not admin_authenticated(request):
+        return redirect_to_login()
+    channels = await REPOSITORY.list_monitor_notification_channels()
+    return templates.TemplateResponse(
+        "monitoring_notifications.html",
+        base_context(
+            request,
+            page_title="NCO LLM CHAT Monitoring Notifications",
+            monitoring_channels=channels,
+            monitoring_secret_ready=MONITORING_SECRET_CIPHER.configured,
+            monitoring_secret_error=MONITORING_SECRET_CIPHER.error,
+        ),
+    )
+
+
 @app.get(f"{SETTINGS.root_path}/ops", response_class=HTMLResponse)
 async def ops_page(request: Request) -> HTMLResponse:
     if not admin_authenticated(request):
@@ -856,6 +935,128 @@ async def ping_vllm_redundancy_api(request: Request) -> JSONResponse:
         allow_restart=False,
     )
     return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/services/availability")
+async def services_availability_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    payload = await load_services_availability(
+        prometheus_url=SETTINGS.monitoring_prometheus_url,
+        settings=SETTINGS,
+    )
+    return JSONResponse(payload)
+
+
+@app.get(f"{SETTINGS.root_path}/api/monitoring/channels")
+async def list_monitoring_channels_api(request: Request) -> JSONResponse:
+    require_admin_api(request)
+    channels = await REPOSITORY.list_monitor_notification_channels()
+    return JSONResponse(
+        {
+            "items": channels,
+            "secret_ready": MONITORING_SECRET_CIPHER.configured,
+            "secret_error": MONITORING_SECRET_CIPHER.error,
+        }
+    )
+
+
+@app.post(f"{SETTINGS.root_path}/api/monitoring/channels")
+async def create_monitoring_channel_api(
+    request: Request,
+    payload: NotificationChannelPayload,
+) -> JSONResponse:
+    require_admin_api(request)
+    normalized = normalize_notification_channel_payload(
+        name=payload.name,
+        channel_type=payload.channel_type,
+        is_active=payload.is_active,
+        config_public=payload.config_public,
+        config_secret=payload.config_secret,
+    )
+    ciphertext = merge_channel_secret_ciphertext(
+        normalized_payload=normalized,
+        existing_channel=None,
+        secret_cipher=MONITORING_SECRET_CIPHER,
+    )
+    channel = await REPOSITORY.create_monitor_notification_channel(
+        name=normalized["name"],
+        channel_type=normalized["channel_type"],
+        is_active=normalized["is_active"],
+        config_public=normalized["config_public"],
+        config_secret_ciphertext=ciphertext,
+    )
+    return JSONResponse({"ok": True, "item": channel})
+
+
+@app.put(f"{SETTINGS.root_path}/api/monitoring/channels/{{channel_id}}")
+async def update_monitoring_channel_api(
+    request: Request,
+    channel_id: str,
+    payload: NotificationChannelPayload,
+) -> JSONResponse:
+    require_admin_api(request)
+    existing = await REPOSITORY.get_monitor_notification_channel(
+        channel_id,
+        include_secret=True,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    normalized = normalize_notification_channel_payload(
+        name=payload.name,
+        channel_type=payload.channel_type,
+        is_active=payload.is_active,
+        config_public=payload.config_public,
+        config_secret=payload.config_secret,
+    )
+    ciphertext = merge_channel_secret_ciphertext(
+        normalized_payload=normalized,
+        existing_channel=existing,
+        secret_cipher=MONITORING_SECRET_CIPHER,
+    )
+    channel = await REPOSITORY.update_monitor_notification_channel(
+        channel_id,
+        name=normalized["name"],
+        channel_type=normalized["channel_type"],
+        is_active=normalized["is_active"],
+        config_public=normalized["config_public"],
+        config_secret_ciphertext=ciphertext,
+    )
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return JSONResponse({"ok": True, "item": channel})
+
+
+@app.delete(f"{SETTINGS.root_path}/api/monitoring/channels/{{channel_id}}")
+async def delete_monitoring_channel_api(
+    request: Request,
+    channel_id: str,
+) -> JSONResponse:
+    require_admin_api(request)
+    existing = await REPOSITORY.get_monitor_notification_channel(channel_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    await REPOSITORY.delete_monitor_notification_channel(channel_id)
+    return JSONResponse({"ok": True, "id": channel_id})
+
+
+@app.post(f"{SETTINGS.root_path}/api/monitoring/channels/{{channel_id}}/test")
+async def test_monitoring_channel_api(
+    request: Request,
+    channel_id: str,
+) -> JSONResponse:
+    require_admin_api(request)
+    channel = await REPOSITORY.get_monitor_notification_channel(
+        channel_id,
+        include_secret=True,
+    )
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    result = await send_test_notification(
+        channel,
+        secret_cipher=MONITORING_SECRET_CIPHER,
+    )
+    await REPOSITORY.touch_monitor_notification_channel_test(channel_id)
+    return JSONResponse({"ok": bool(result.get("ok")), "result": result})
 
 
 @app.get(f"{SETTINGS.root_path}/api/ops/summary")

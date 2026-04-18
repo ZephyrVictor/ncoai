@@ -44,10 +44,17 @@ class AdminSettings:
     monitoring_prometheus_url: str
     monitoring_loki_url: str
     monitoring_grafana_url: str
+    monitoring_secret_key: str
     team_token_fixed_game_id: int
+    nginx_port: int
+    chainlit_port: int
+    chainlit_root_path: str
+    litellm_port: int
     vllm_host: str
     vllm_port: int
     served_model_name: str
+    caps_enabled: bool
+    caps_ftp_port: int
     vllm_failover_enabled: bool
     vllm_backup_origin: str
     vllm_primary_request_timeout_seconds: float
@@ -114,10 +121,21 @@ def load_settings() -> AdminSettings:
             "ADMIN_MONITORING_GRAFANA_URL",
             "/grafana/",
         ),
+        monitoring_secret_key=os.getenv(
+            "ADMIN_MONITORING_SECRET_KEY",
+            "",
+        ).strip(),
         team_token_fixed_game_id=int(os.getenv("GZCTF_FIXED_GAME_ID", "0")),
+        nginx_port=int(os.getenv("NGINX_PORT", "8088")),
+        chainlit_port=int(os.getenv("CHAINLIT_PORT", "3100")),
+        chainlit_root_path=os.getenv("CHAINLIT_ROOT_PATH", "/chat"),
+        litellm_port=int(os.getenv("LITELLM_PORT", "33455")),
         vllm_host=os.getenv("VLLM_HOST", "127.0.0.1"),
         vllm_port=int(os.getenv("VLLM_PORT", "12233")),
         served_model_name=os.getenv("SERVED_MODEL_NAME", "qwen35b"),
+        caps_enabled=os.getenv("CAPS_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        caps_ftp_port=int(os.getenv("CAPS_FTP_PORT", "3221")),
         vllm_failover_enabled=os.getenv("VLLM_FAILOVER_ENABLED", "").strip().lower()
         in {"1", "true", "yes", "on"},
         vllm_backup_origin=os.getenv("VLLM_BACKUP_ORIGIN", "").strip(),

@@ -498,6 +498,103 @@ UPDATE_TEAM_TOKEN_AUTH_CONFIG_SQL = text(
     """
 )
 
+LIST_MONITOR_NOTIFICATION_CHANNELS_SQL = text(
+    """
+    SELECT id, name, channel_type, is_active, config_public,
+           config_secret_ciphertext, created_at, updated_at, last_test_at
+    FROM monitor_notification_channels
+    ORDER BY created_at DESC, id DESC
+    """
+)
+
+GET_MONITOR_NOTIFICATION_CHANNEL_SQL = text(
+    """
+    SELECT id, name, channel_type, is_active, config_public,
+           config_secret_ciphertext, created_at, updated_at, last_test_at
+    FROM monitor_notification_channels
+    WHERE id = :id
+    """
+)
+
+INSERT_MONITOR_NOTIFICATION_CHANNEL_SQL = text(
+    """
+    INSERT INTO monitor_notification_channels (
+        id,
+        name,
+        channel_type,
+        is_active,
+        config_public,
+        config_secret_ciphertext,
+        created_at,
+        updated_at,
+        last_test_at
+    ) VALUES (
+        :id,
+        :name,
+        :channel_type,
+        :is_active,
+        CAST(:config_public AS JSONB),
+        :config_secret_ciphertext,
+        :created_at,
+        :updated_at,
+        :last_test_at
+    )
+    """
+)
+
+UPDATE_MONITOR_NOTIFICATION_CHANNEL_SQL = text(
+    """
+    UPDATE monitor_notification_channels
+    SET name = :name,
+        channel_type = :channel_type,
+        is_active = :is_active,
+        config_public = CAST(:config_public AS JSONB),
+        config_secret_ciphertext = :config_secret_ciphertext,
+        updated_at = :updated_at
+    WHERE id = :id
+    """
+)
+
+DELETE_MONITOR_NOTIFICATION_CHANNEL_SQL = text(
+    """
+    DELETE FROM monitor_notification_channels
+    WHERE id = :id
+    """
+)
+
+TOUCH_MONITOR_NOTIFICATION_CHANNEL_TEST_SQL = text(
+    """
+    UPDATE monitor_notification_channels
+    SET last_test_at = :last_test_at,
+        updated_at = :updated_at
+    WHERE id = :id
+    """
+)
+
+INSERT_MONITOR_NOTIFICATION_EVENT_SQL = text(
+    """
+    INSERT INTO monitor_notification_events (
+        id,
+        monitor_id,
+        monitor_name,
+        event_type,
+        status,
+        message,
+        delivery_results,
+        created_at
+    ) VALUES (
+        :id,
+        :monitor_id,
+        :monitor_name,
+        :event_type,
+        :status,
+        :message,
+        CAST(:delivery_results AS JSONB),
+        :created_at
+    )
+    """
+)
+
 INSERT_CAPS_SUBMISSION_SQL = text(
     """
     INSERT INTO caps_submissions (
@@ -814,6 +911,158 @@ class ControlPlaneRepository:
             "file_extension": file_extension,
             "content_type": content_type,
             "file_size_bytes": file_size_bytes,
+            "created_at": serialize_datetime(now),
+        }
+
+    async def list_monitor_notification_channels(
+        self,
+        *,
+        include_secret: bool = False,
+    ) -> list[dict[str, Any]]:
+        async with self._engine.begin() as conn:
+            rows = list((await conn.execute(LIST_MONITOR_NOTIFICATION_CHANNELS_SQL)).mappings())
+        return [
+            self._serialize_monitor_notification_channel(row, include_secret=include_secret)
+            for row in rows
+        ]
+
+    async def get_monitor_notification_channel(
+        self,
+        channel_id: str,
+        *,
+        include_secret: bool = False,
+    ) -> dict[str, Any] | None:
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    GET_MONITOR_NOTIFICATION_CHANNEL_SQL,
+                    {"id": channel_id},
+                )
+            ).mappings().first()
+        return self._serialize_monitor_notification_channel(
+            row,
+            include_secret=include_secret,
+        )
+
+    async def create_monitor_notification_channel(
+        self,
+        *,
+        name: str,
+        channel_type: str,
+        is_active: bool,
+        config_public: dict[str, Any],
+        config_secret_ciphertext: str | None,
+    ) -> dict[str, Any]:
+        channel_id = str(uuid.uuid4())
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                INSERT_MONITOR_NOTIFICATION_CHANNEL_SQL,
+                {
+                    "id": channel_id,
+                    "name": name,
+                    "channel_type": channel_type,
+                    "is_active": is_active,
+                    "config_public": json.dumps(config_public or {}, ensure_ascii=False),
+                    "config_secret_ciphertext": config_secret_ciphertext,
+                    "created_at": now,
+                    "updated_at": now,
+                    "last_test_at": None,
+                },
+            )
+        channel = await self.get_monitor_notification_channel(channel_id)
+        if channel is None:
+            raise RuntimeError("Monitor notification channel creation failed")
+        return channel
+
+    async def update_monitor_notification_channel(
+        self,
+        channel_id: str,
+        *,
+        name: str,
+        channel_type: str,
+        is_active: bool,
+        config_public: dict[str, Any],
+        config_secret_ciphertext: str | None,
+    ) -> dict[str, Any] | None:
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                UPDATE_MONITOR_NOTIFICATION_CHANNEL_SQL,
+                {
+                    "id": channel_id,
+                    "name": name,
+                    "channel_type": channel_type,
+                    "is_active": is_active,
+                    "config_public": json.dumps(config_public or {}, ensure_ascii=False),
+                    "config_secret_ciphertext": config_secret_ciphertext,
+                    "updated_at": now,
+                },
+            )
+        return await self.get_monitor_notification_channel(channel_id)
+
+    async def delete_monitor_notification_channel(
+        self,
+        channel_id: str,
+    ) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                DELETE_MONITOR_NOTIFICATION_CHANNEL_SQL,
+                {"id": channel_id},
+            )
+
+    async def touch_monitor_notification_channel_test(
+        self,
+        channel_id: str,
+    ) -> None:
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                TOUCH_MONITOR_NOTIFICATION_CHANNEL_TEST_SQL,
+                {
+                    "id": channel_id,
+                    "last_test_at": now,
+                    "updated_at": now,
+                },
+            )
+
+    async def create_monitor_notification_event(
+        self,
+        *,
+        monitor_id: str,
+        monitor_name: str,
+        event_type: str,
+        status: str,
+        message: str,
+        delivery_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        event_id = str(uuid.uuid4())
+        now = utcnow()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                INSERT_MONITOR_NOTIFICATION_EVENT_SQL,
+                {
+                    "id": event_id,
+                    "monitor_id": monitor_id,
+                    "monitor_name": monitor_name,
+                    "event_type": event_type,
+                    "status": status,
+                    "message": message,
+                    "delivery_results": json.dumps(
+                        delivery_results or {},
+                        ensure_ascii=False,
+                    ),
+                    "created_at": now,
+                },
+            )
+        return {
+            "id": event_id,
+            "monitor_id": monitor_id,
+            "monitor_name": monitor_name,
+            "event_type": event_type,
+            "status": status,
+            "message": message,
+            "delivery_results": delivery_results or {},
             "created_at": serialize_datetime(now),
         }
 
@@ -1409,6 +1658,29 @@ class ControlPlaneRepository:
         serialized["config_version"] = int(serialized.get("config_version") or 0)
         serialized["created_at"] = serialize_datetime(serialized.get("created_at"))
         serialized["updated_at"] = serialize_datetime(serialized.get("updated_at"))
+        return serialized
+
+    def _serialize_monitor_notification_channel(
+        self,
+        row: dict[str, Any] | Any | None,
+        *,
+        include_secret: bool = False,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        serialized = dict(row)
+        serialized["name"] = str(serialized.get("name") or "").strip()
+        serialized["channel_type"] = str(serialized.get("channel_type") or "").strip()
+        serialized["is_active"] = bool(serialized.get("is_active"))
+        serialized["config_public"] = dict(serialized.get("config_public") or {})
+        serialized["has_secret"] = bool(
+            str(serialized.get("config_secret_ciphertext") or "").strip()
+        )
+        if not include_secret:
+            serialized.pop("config_secret_ciphertext", None)
+        serialized["created_at"] = serialize_datetime(serialized.get("created_at"))
+        serialized["updated_at"] = serialize_datetime(serialized.get("updated_at"))
+        serialized["last_test_at"] = serialize_datetime(serialized.get("last_test_at"))
         return serialized
 
     def _policy_is_active_now(

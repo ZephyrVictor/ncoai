@@ -9,6 +9,7 @@ SCRIPTS = [
     "scripts/admin_e2e_users.py",
     "scripts/admin_e2e_import.py",
     "scripts/admin_e2e_quota_v2.py",
+    "scripts/admin_e2e_monitoring.py",
     "scripts/chat_e2e_stream_resume_copy.py",
     "scripts/chat_e2e_feature_flags.py",
 ]

@@ -224,6 +224,29 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
             )
         return owner
 
+    async def _load_thread_identity(self, thread_id: str) -> dict[str, Any] | None:
+        result = await self.execute_sql(
+            query=(
+                'SELECT "id", "userId", "userIdentifier", "createdAt" '
+                "FROM threads WHERE \"id\" = :thread_id"
+            ),
+            parameters={"thread_id": thread_id},
+        )
+        if isinstance(result, list) and result:
+            return dict(result[0])
+        return None
+
+    async def _infer_session_user_id(self) -> str | None:
+        try:
+            from chainlit.context import context as chainlit_context
+
+            session = getattr(chainlit_context, "session", None)
+            user = getattr(session, "user", None)
+        except Exception:
+            return None
+        user_id = getattr(user, "id", None)
+        return str(user_id) if user_id else None
+
     async def _invalidate_thread_views(
         self,
         *,
@@ -351,6 +374,17 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
 
         owner = await self._resolve_thread_owner(thread_id)
         author = owner.get("user_identifier")
+        if not author and owner.get("user_id"):
+            try:
+                author = await self._get_user_identifer_by_id(str(owner["user_id"]))
+            except Exception:
+                author = None
+            if author:
+                await self._store_thread_owner(
+                    thread_id=thread_id,
+                    user_id=owner.get("user_id"),
+                    user_identifier=author,
+                )
         if author:
             await self._cache_set_json(
                 self._thread_author_cache_key(thread_id, version),
@@ -484,27 +518,55 @@ class ConfiguredSQLAlchemyDataLayer(SQLAlchemyDataLayer):
         metadata: dict | None = None,
         tags: list[str] | None = None,
     ):
+        thread_identity = await self._load_thread_identity(thread_id)
+        inferred_user_id = (
+            user_id
+            or (
+                str(thread_identity.get("userId"))
+                if thread_identity and thread_identity.get("userId")
+                else None
+            )
+            or await self._infer_session_user_id()
+        )
+        needs_bootstrap = (
+            thread_identity is None
+            or thread_identity.get("createdAt") is None
+            or (
+                inferred_user_id is not None
+                and (
+                    thread_identity.get("userId") is None
+                    or thread_identity.get("userIdentifier") is None
+                )
+            )
+        )
+        if needs_bootstrap:
+            bootstrap_kwargs: dict[str, Any] = {"thread_id": thread_id}
+            if inferred_user_id is not None:
+                bootstrap_kwargs["user_id"] = inferred_user_id
+            await super().update_thread(**bootstrap_kwargs)
+
+        effective_user_id = user_id or (inferred_user_id if needs_bootstrap else None)
         await super().update_thread(
             thread_id=thread_id,
             name=name,
-            user_id=user_id,
+            user_id=effective_user_id,
             metadata=metadata,
             tags=tags,
         )
         user_identifier = None
-        if user_id:
+        if effective_user_id:
             try:
-                user_identifier = await self._get_user_identifer_by_id(user_id)
+                user_identifier = await self._get_user_identifer_by_id(effective_user_id)
             except Exception:
                 user_identifier = None
             await self._store_thread_owner(
                 thread_id=thread_id,
-                user_id=user_id,
+                user_id=effective_user_id,
                 user_identifier=user_identifier,
             )
         await self._invalidate_thread_views(
             thread_id=thread_id,
-            user_id=user_id,
+            user_id=effective_user_id,
             user_identifier=user_identifier,
         )
 

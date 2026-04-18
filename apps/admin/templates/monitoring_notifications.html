@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h1>监控通知</h1>
+      <p class="muted">管理 SMTP 邮件和 Webhook 通道，用于关键服务异常与恢复通知。</p>
+    </div>
+  </div>
+  {% if not monitoring_secret_ready %}
+  <div class="inline-status error" style="margin-top: 16px;">
+    {{ monitoring_secret_error or "ADMIN_MONITORING_SECRET_KEY 未配置；可以查看通道，但无法安全保存新的密钥字段。" }}
+  </div>
+  {% endif %}
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="panel-header">
+      <h2>通道列表</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>类型</th>
+            <th>状态</th>
+            <th>上次测试</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="monitoring-channels-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2 id="monitoring-form-title">新增通道</h2>
+    </div>
+    <form id="monitoring-channel-form" class="stack">
+      <input type="hidden" id="channel-id" />
+      <label>
+        名称
+        <input id="channel-name" type="text" required />
+      </label>
+      <label>
+        类型
+        <select id="channel-type">
+          <option value="smtp_email">SMTP Email</option>
+          <option value="webhook">Webhook</option>
+        </select>
+      </label>
+      <label class="checkbox">
+        <input id="channel-active" type="checkbox" checked />
+        <span>启用此通道</span>
+      </label>
+
+      <div id="smtp-fields" class="stack">
+        <label>
+          SMTP Host
+          <input id="smtp-host" type="text" />
+        </label>
+        <label>
+          SMTP Port
+          <input id="smtp-port" type="number" min="1" max="65535" value="587" />
+        </label>
+        <label>
+          Username
+          <input id="smtp-username" type="text" />
+        </label>
+        <label>
+          Password
+          <input id="smtp-password" type="password" placeholder="留空则保留旧密码" />
+        </label>
+        <label>
+          From Email
+          <input id="smtp-from-email" type="email" />
+        </label>
+        <label>
+          To Emails
+          <input id="smtp-to-emails" type="text" placeholder="a@example.com,b@example.com" />
+        </label>
+        <label>
+          Security
+          <select id="smtp-security">
+            <option value="starttls">STARTTLS</option>
+            <option value="ssl">SSL</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="webhook-fields" class="stack" style="display: none;">
+        <label>
+          Webhook URL
+          <input id="webhook-url" type="url" />
+        </label>
+        <label>
+          Timeout Seconds
+          <input id="webhook-timeout" type="number" min="1" max="300" value="10" />
+        </label>
+        <label>
+          Bearer Token
+          <input id="webhook-bearer-token" type="password" placeholder="留空则保留旧 token" />
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="submit">保存</button>
+        <button id="monitoring-form-reset" type="button" class="ghost">重置</button>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const monitoringPage = {
+    channels: {{ monitoring_channels | tojson }},
+  };
+
+  function currentChannelType() {
+    return document.getElementById('channel-type').value;
+  }
+
+  function toggleChannelFields() {
+    const smtpFields = document.getElementById('smtp-fields');
+    const webhookFields = document.getElementById('webhook-fields');
+    const isSmtp = currentChannelType() === 'smtp_email';
+    smtpFields.style.display = isSmtp ? 'grid' : 'none';
+    webhookFields.style.display = isSmtp ? 'none' : 'grid';
+  }
+
+  function renderChannelsTable() {
+    const tbody = document.getElementById('monitoring-channels-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = monitoringPage.channels.map((channel) => `
+      <tr>
+        <td><strong>${channel.name}</strong></td>
+        <td>${channel.channel_type}</td>
+        <td><span class="status-chip status-${channel.is_active ? 'up' : 'unknown'}">${channel.is_active ? 'active' : 'disabled'}</span></td>
+        <td>${channel.last_test_at || '-'}</td>
+        <td>
+          <div class="actions">
+            <button type="button" class="ghost" onclick="editChannel('${channel.id}')">编辑</button>
+            <button type="button" class="ghost" onclick="testChannel('${channel.id}')">测试</button>
+            <button type="button" class="danger" onclick="deleteChannel('${channel.id}')">删除</button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function resetMonitoringForm() {
+    document.getElementById('monitoring-form-title').textContent = '新增通道';
+    document.getElementById('channel-id').value = '';
+    document.getElementById('channel-name').value = '';
+    document.getElementById('channel-type').value = 'smtp_email';
+    document.getElementById('channel-active').checked = true;
+    document.getElementById('smtp-host').value = '';
+    document.getElementById('smtp-port').value = '587';
+    document.getElementById('smtp-username').value = '';
+    document.getElementById('smtp-password').value = '';
+    document.getElementById('smtp-from-email').value = '';
+    document.getElementById('smtp-to-emails').value = '';
+    document.getElementById('smtp-security').value = 'starttls';
+    document.getElementById('webhook-url').value = '';
+    document.getElementById('webhook-timeout').value = '10';
+    document.getElementById('webhook-bearer-token').value = '';
+    toggleChannelFields();
+  }
+
+  function editChannel(channelId) {
+    const channel = monitoringPage.channels.find((item) => item.id === channelId);
+    if (!channel) return;
+    document.getElementById('monitoring-form-title').textContent = `编辑通道: ${channel.name}`;
+    document.getElementById('channel-id').value = channel.id;
+    document.getElementById('channel-name').value = channel.name;
+    document.getElementById('channel-type').value = channel.channel_type;
+    document.getElementById('channel-active').checked = Boolean(channel.is_active);
+    if (channel.channel_type === 'smtp_email') {
+      document.getElementById('smtp-host').value = channel.config_public.host || '';
+      document.getElementById('smtp-port').value = channel.config_public.port || '587';
+      document.getElementById('smtp-username').value = channel.config_public.username || '';
+      document.getElementById('smtp-password').value = '';
+      document.getElementById('smtp-from-email').value = channel.config_public.from_email || '';
+      document.getElementById('smtp-to-emails').value = (channel.config_public.to_emails || []).join(',');
+      document.getElementById('smtp-security').value = channel.config_public.security || 'starttls';
+    } else {
+      document.getElementById('webhook-url').value = channel.config_public.url || '';
+      document.getElementById('webhook-timeout').value = channel.config_public.timeout_seconds || '10';
+      document.getElementById('webhook-bearer-token').value = '';
+    }
+    toggleChannelFields();
+  }
+
+  function buildChannelPayload() {
+    const channelType = currentChannelType();
+    if (channelType === 'smtp_email') {
+      return {
+        name: document.getElementById('channel-name').value,
+        channel_type: channelType,
+        is_active: document.getElementById('channel-active').checked,
+        config_public: {
+          host: document.getElementById('smtp-host').value,
+          port: Number(document.getElementById('smtp-port').value || '587'),
+          username: document.getElementById('smtp-username').value,
+          from_email: document.getElementById('smtp-from-email').value,
+          to_emails: document.getElementById('smtp-to-emails').value,
+          security: document.getElementById('smtp-security').value
+        },
+        config_secret: {
+          smtp_password: document.getElementById('smtp-password').value
+        }
+      };
+    }
+    return {
+      name: document.getElementById('channel-name').value,
+      channel_type: channelType,
+      is_active: document.getElementById('channel-active').checked,
+      config_public: {
+        url: document.getElementById('webhook-url').value,
+        timeout_seconds: Number(document.getElementById('webhook-timeout').value || '10')
+      },
+      config_secret: {
+        bearer_token: document.getElementById('webhook-bearer-token').value
+      }
+    };
+  }
+
+  async function refreshChannels() {
+    const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/monitoring/channels`, {
+      credentials: 'same-origin'
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    monitoringPage.channels = payload.items || [];
+    renderChannelsTable();
+  }
+
+  async function saveChannel(event) {
+    event.preventDefault();
+    const channelId = document.getElementById('channel-id').value;
+    const payload = buildChannelPayload();
+    const method = channelId ? 'PUT' : 'POST';
+    const path = channelId
+      ? `${window.ADMIN_ROOT_PATH}/api/monitoring/channels/${channelId}`
+      : `${window.ADMIN_ROOT_PATH}/api/monitoring/channels`;
+    const response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || `HTTP ${response.status}`);
+    }
+    await refreshChannels();
+    resetMonitoringForm();
+    renderFlash('通知通道已保存。', 'success');
+  }
+
+  async function testChannel(channelId) {
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/monitoring/channels/${channelId}/test`, {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        throw new Error((payload.result && payload.result.detail) || payload.detail || `HTTP ${response.status}`);
+      }
+      await refreshChannels();
+      renderFlash('测试通知已发送。', 'success');
+    } catch (error) {
+      renderFlash(`测试失败：${error}`, 'error');
+    }
+  }
+
+  async function deleteChannel(channelId) {
+    try {
+      const response = await fetch(`${window.ADMIN_ROOT_PATH}/api/monitoring/channels/${channelId}`, {
+        method: 'DELETE',
+        credentials: 'same-origin'
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      await refreshChannels();
+      resetMonitoringForm();
+      renderFlash('通知通道已删除。', 'success');
+    } catch (error) {
+      renderFlash(`删除失败：${error}`, 'error');
+    }
+  }
+
+  document.getElementById('channel-type').addEventListener('change', toggleChannelFields);
+  document.getElementById('monitoring-channel-form').addEventListener('submit', async (event) => {
+    try {
+      await saveChannel(event);
+    } catch (error) {
+      renderFlash(`保存失败：${error}`, 'error');
+    }
+  });
+  document.getElementById('monitoring-form-reset').addEventListener('click', resetMonitoringForm);
+
+  toggleChannelFields();
+  renderChannelsTable();
+</script>
+{% endblock %}

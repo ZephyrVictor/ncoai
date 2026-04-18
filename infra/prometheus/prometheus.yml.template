@@ -47,14 +47,17 @@ scrape_configs:
       module: [http_2xx]
     static_configs:
       - targets:
-          - http://host.docker.internal:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}/health
-          - http://host.docker.internal:${ADMIN_APP_PORT}${ADMIN_APP_ROOT_PATH}/healthz
-          - http://host.docker.internal:${LITELLM_PORT}/metrics
-          - http://host.docker.internal:${VLLM_PORT}/metrics
+          - http://127.0.0.1:${NGINX_PORT}/
+          - http://127.0.0.1:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}/health
+          - http://127.0.0.1:${ADMIN_APP_PORT}${ADMIN_APP_ROOT_PATH}/healthz
+          - http://127.0.0.1:${LITELLM_PORT}/test
+          - http://127.0.0.1:${VLLM_PORT}/metrics
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: blackbox-exporter:9115
+        replacement: host.docker.internal:9115
+
+__CAPS_TCP_JOB_BLOCK__

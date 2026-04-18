@@ -42,7 +42,9 @@ EXPECTED_DASHBOARDS = {
 
 
 def main() -> int:
+    caps_enabled = env("CAPS_ENABLED", "").lower() in {"1", "true", "yes", "on"}
     http = requests.Session()
+    http.trust_env = False
     prometheus_response = http.get(f"{PROMETHEUS_URL}/api/v1/targets", timeout=20)
     prometheus_response.raise_for_status()
     payload = prometheus_response.json()
@@ -74,12 +76,15 @@ def main() -> int:
         for item in dashboards_response.json()
         if item.get("title")
     }
+    expected_jobs = set(EXPECTED_JOBS)
+    if caps_enabled:
+        expected_jobs.add("host-service-tcp")
     report = {
         "prometheus_url": PROMETHEUS_URL,
         "grafana_url": GRAFANA_URL,
         "loki_url": LOKI_URL,
         "active_jobs": sorted(job for job in jobs if job),
-        "missing_jobs": sorted(EXPECTED_JOBS - jobs),
+        "missing_jobs": sorted(expected_jobs - jobs),
         "grafana_login_status": grafana_response.status_code,
         "loki_ready_status": loki_response.status_code,
         "grafana_datasources": sorted(datasource for datasource in datasources if datasource),

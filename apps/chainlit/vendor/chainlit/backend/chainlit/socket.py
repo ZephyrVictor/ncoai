@@ -149,7 +149,14 @@ async def connect(sid: str, environ: WSGIEnvironment, auth: WebSocketSessionAuth
                 thread_author = None
                 get_thread_author = getattr(data_layer, "get_thread_author", None)
                 if callable(get_thread_author):
-                    thread_author = await get_thread_author(thread_id)
+                    try:
+                        thread_author = await get_thread_author(thread_id)
+                    except ValueError:
+                        logger.warning(
+                            "Thread author missing during websocket connect, treating thread as non-resumable.",
+                            extra={"thread_id": thread_id},
+                        )
+                        thread_author = None
                 else:
                     thread = await data_layer.get_thread(thread_id)
                     if thread:

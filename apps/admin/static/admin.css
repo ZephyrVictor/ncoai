@@ -369,6 +369,82 @@ th, td {
   font-size: 12px;
 }
 
+.service-panel {
+  margin-bottom: 0;
+}
+
+.service-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) 1fr;
+  gap: 24px;
+  align-items: center;
+}
+
+.service-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.service-detail {
+  margin-top: 12px;
+}
+
+.availability-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #53c37b;
+  color: #083c19;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.service-history {
+  min-width: 0;
+}
+
+.uptime-bars {
+  display: grid;
+  grid-template-columns: repeat(144, minmax(3px, 1fr));
+  gap: 3px;
+  align-items: center;
+}
+
+.uptime-bar {
+  display: block;
+  height: 20px;
+  border-radius: 999px;
+  background: #c9d4cb;
+}
+
+.uptime-bar-up {
+  background: #53c37b;
+}
+
+.uptime-bar-down {
+  background: #d95c4e;
+}
+
+.uptime-bar-degraded {
+  background: #e3ba57;
+}
+
+.uptime-bar-unknown, .uptime-bar-missing {
+  background: #bcc5c0;
+}
+
+.service-scale {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .container {
     padding: 16px;
@@ -378,5 +454,13 @@ th, td {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+
+  .service-row {
+    grid-template-columns: 1fr;
+  }
+
+  .uptime-bars {
+    gap: 2px;
   }
 }

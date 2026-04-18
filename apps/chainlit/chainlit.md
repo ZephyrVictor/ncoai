@@ -1,3 +1,5 @@
-# NCO LLM CHAT
+# 平台须知
 
-Minimal chat delivery for `NCO LLM CHAT + LiteLLM + vLLM`.
+选手对于每个对话有1024 token限额，不限制对话数量。
+
+为了服务器稳定性，对请求进行排队，因此请选手耐心等待，若请求超时，则请重新发起对话即可。
