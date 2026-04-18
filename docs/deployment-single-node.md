@@ -30,6 +30,12 @@ Prepare these local files from the templates in `infra/env/`:
 
 Fallback for legacy development remains `infra/env/.env.dev`, but deployment should use the split files and avoid hidden runtime defaults.
 
+To create the split env files from the checked-in examples:
+
+```bash
+bash scripts/deploy/prepare-env.sh
+```
+
 ## Manual Prerequisites
 
 - Host model directory already present and pointed to by `MODEL_PATH`
@@ -47,9 +53,24 @@ Fallback for legacy development remains `infra/env/.env.dev`, but deployment sho
 
 ## Initialization Order
 
+Fast path:
+
+```bash
+python3 devctl.py init
+python3 devctl.py up apps
+```
+
+`python3 devctl.py init` runs the three deployment initialization scripts in order:
+
 1. `bash scripts/deploy/init-host.sh`
-2. `bash scripts/deploy/init-stack.sh`
-3. `bash scripts/deploy/start-services.sh`
+2. `bash scripts/deploy/init-infra.sh`
+3. `bash scripts/deploy/init-db.sh`
+
+Application startup is still a separate step:
+
+1. `python3 devctl.py up apps`
+
+If you are migrating data from an older server, prefer the fine-grained sequence below so you can restore databases and storage between infra startup and `init-db`.
 
 Equivalent fine-grained steps:
 
@@ -57,6 +78,8 @@ Equivalent fine-grained steps:
 2. `bash scripts/deploy/init-infra.sh`
 3. `bash scripts/deploy/init-db.sh`
 4. `python3 devctl.py up apps`
+
+See `docs/server-migration-init.md` for the full migration checklist, including which files and directories must be copied to a new host.
 
 ## `devctl` Responsibilities
 

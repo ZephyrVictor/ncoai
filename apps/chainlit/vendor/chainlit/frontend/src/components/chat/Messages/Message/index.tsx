@@ -33,7 +33,12 @@ interface Props {
 }
 
 const EMPTY_ELEMENTS: IMessageElement[] = [];
-type GenerationStatus = 'pending' | 'stopping' | 'stopped' | undefined;
+type GenerationStatus =
+  | 'pending'
+  | 'streaming'
+  | 'stopping'
+  | 'stopped'
+  | undefined;
 
 const Message = memo(
   ({
@@ -66,10 +71,14 @@ const Message = memo(
       : undefined;
     const generationStatus = message.metadata
       ?.generation_status as GenerationStatus;
+    const isLocalResyncing = Boolean(
+      message.metadata?.local_generation_resyncing
+    );
     const shouldShowAssistantStatus =
       !isStep &&
-      !!generationStatus &&
-      (generationStatus !== 'pending' || !message.output);
+      (isLocalResyncing ||
+        (!!generationStatus &&
+          (generationStatus !== 'pending' || !message.output)));
 
     const userMessageContent = useMemo(
       () => (
@@ -86,7 +95,21 @@ const Message = memo(
 
     const assistantStatus = useMemo(() => {
       switch (generationStatus) {
+        case 'streaming':
+          if (isLocalResyncing) {
+            return {
+              label: '正在生成中，正在与服务器重新同步',
+              loading: true
+            };
+          }
+          return undefined;
         case 'pending':
+          if (isLocalResyncing) {
+            return {
+              label: '正在生成中，正在与服务器重新同步',
+              loading: true
+            };
+          }
           return {
             label: t('chat.messages.status.pendingResponse'),
             loading: true
@@ -102,9 +125,15 @@ const Message = memo(
             loading: false
           };
         default:
+          if (isLocalResyncing) {
+            return {
+              label: '正在生成中，正在与服务器重新同步',
+              loading: true
+            };
+          }
           return undefined;
       }
-    }, [generationStatus, t]);
+    }, [generationStatus, isLocalResyncing, t]);
 
     if (skip) {
       if (!message.steps) {

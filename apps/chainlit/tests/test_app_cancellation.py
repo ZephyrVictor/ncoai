@@ -69,6 +69,48 @@ def make_fake_client(chat_completions) -> SimpleNamespace:
     )
 
 
+class SuccessfulStream:
+    def __init__(self, *tokens: str) -> None:
+        self._parts = [
+            SimpleNamespace(
+                id="provider-request-id",
+                usage=None,
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=token))],
+            )
+            for token in tokens
+        ]
+        self._parts.append(
+            SimpleNamespace(
+                id="provider-request-id",
+                usage=SimpleNamespace(
+                    prompt_tokens=12,
+                    completion_tokens=30,
+                    total_tokens=42,
+                ),
+                choices=[],
+            )
+        )
+        self._index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._index >= len(self._parts):
+            raise StopAsyncIteration
+        part = self._parts[self._index]
+        self._index += 1
+        return part
+
+
+class ReturnsSuccessfulStream:
+    def __init__(self, *tokens: str) -> None:
+        self._stream = SuccessfulStream(*tokens)
+
+    async def create(self, **_: object):
+        return self._stream
+
+
 @pytest.fixture(autouse=True)
 def patch_message_class(monkeypatch):
     monkeypatch.setattr(chainlit_app.cl, "Message", FakeMessage)
@@ -105,6 +147,34 @@ def base_patches(monkeypatch):
     monkeypatch.setattr(chainlit_app, "persist_message_snapshot", AsyncMock())
     monkeypatch.setattr(chainlit_app, "persist_request_metadata", AsyncMock())
     monkeypatch.setattr(chainlit_app, "close_async_resource", AsyncMock())
+    monkeypatch.setattr(
+        chainlit_app,
+        "acquire_litellm_request_slot",
+        AsyncMock(return_value=(True, 0.0)),
+    )
+    monkeypatch.setattr(
+        chainlit_app,
+        "GLOBAL_ADMISSION_CONTROLLER",
+        SimpleNamespace(
+            is_saturated=AsyncMock(return_value=False),
+            acquire=AsyncMock(return_value=(SimpleNamespace(holder_id="lease-1"), 0.0)),
+            release=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        chainlit_app,
+        "GENERATION_REGISTRY",
+        SimpleNamespace(
+            start=AsyncMock(),
+            append_token=AsyncMock(),
+            set_status=AsyncMock(),
+            set_content=AsyncMock(),
+            snapshot_due=AsyncMock(return_value=False),
+            mark_snapshot=AsyncMock(),
+            get=AsyncMock(return_value=None),
+            remove=AsyncMock(),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -180,3 +250,133 @@ async def test_cancelled_generation_releases_unstarted_request(monkeypatch, base
         None,
         "test-model",
     )
+
+
+@pytest.mark.asyncio
+async def test_admission_is_acquired_before_quota_reserve(monkeypatch, base_patches):
+    call_order: list[str] = []
+    reservation = SimpleNamespace(
+        request_id="reservation-3",
+        allowed_completion_tokens=256,
+        thread_summary=SimpleNamespace(used_tokens=0),
+        user_summary=SimpleNamespace(used_tokens=0),
+    )
+    settlement = SimpleNamespace(
+        to_message_metadata=lambda: {
+            "request_tokens": 42,
+            "prompt_tokens": 12,
+            "completion_tokens": 30,
+        }
+    )
+
+    async def reserve(**_: object):
+        call_order.append("reserve")
+        return reservation
+
+    async def acquire():
+        call_order.append("admission")
+        return SimpleNamespace(holder_id="lease-2"), 0.0
+
+    quota_service = SimpleNamespace(
+        reserve=AsyncMock(side_effect=reserve),
+        settle=AsyncMock(return_value=settlement),
+        release=AsyncMock(),
+    )
+    monkeypatch.setattr(chainlit_app, "QUOTA_SERVICE", quota_service)
+    monkeypatch.setattr(
+        chainlit_app,
+        "GLOBAL_ADMISSION_CONTROLLER",
+        SimpleNamespace(
+            is_saturated=AsyncMock(return_value=False),
+            acquire=AsyncMock(side_effect=acquire),
+            release=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        chainlit_app,
+        "build_client",
+        Mock(return_value=make_fake_client(ReturnsSuccessfulStream("hello"))),
+    )
+
+    await chainlit_app.on_message(FakeMessage(content="user prompt", id="user-message-id"))
+
+    assert call_order[:2] == ["admission", "reserve"]
+
+
+@pytest.mark.asyncio
+async def test_admission_timeout_does_not_create_quota_reservation(
+    monkeypatch, base_patches
+):
+    quota_service = SimpleNamespace(
+        reserve=AsyncMock(),
+        settle=AsyncMock(),
+        release=AsyncMock(),
+    )
+    monkeypatch.setattr(chainlit_app, "QUOTA_SERVICE", quota_service)
+    monkeypatch.setattr(
+        chainlit_app,
+        "GLOBAL_ADMISSION_CONTROLLER",
+        SimpleNamespace(
+            is_saturated=AsyncMock(return_value=True),
+            acquire=AsyncMock(return_value=(None, 8.0)),
+            release=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(
+        chainlit_app,
+        "build_client",
+        Mock(return_value=make_fake_client(ReturnsSuccessfulStream("hello"))),
+    )
+
+    await chainlit_app.on_message(FakeMessage(content="user prompt", id="user-message-id"))
+
+    quota_service.reserve.assert_not_called()
+    assert chainlit_app.emit_message_update.await_count == 2
+    assistant_message = chainlit_app.emit_message_update.await_args.args[0]
+    assert "排队等待超时" in assistant_message.content
+
+
+@pytest.mark.asyncio
+async def test_streaming_tokens_skip_periodic_snapshot_until_finalize(
+    monkeypatch, base_patches
+):
+    reservation = SimpleNamespace(
+        request_id="reservation-4",
+        allowed_completion_tokens=256,
+        thread_summary=SimpleNamespace(used_tokens=0),
+        user_summary=SimpleNamespace(used_tokens=0),
+    )
+    settlement = SimpleNamespace(
+        to_message_metadata=lambda: {
+            "request_tokens": 42,
+            "prompt_tokens": 12,
+            "completion_tokens": 30,
+        }
+    )
+    quota_service = SimpleNamespace(
+        reserve=AsyncMock(return_value=reservation),
+        settle=AsyncMock(return_value=settlement),
+        release=AsyncMock(),
+    )
+    generation_registry = SimpleNamespace(
+        start=AsyncMock(),
+        append_token=AsyncMock(),
+        set_status=AsyncMock(),
+        set_content=AsyncMock(),
+        snapshot_due=AsyncMock(side_effect=[False, False]),
+        mark_snapshot=AsyncMock(),
+        get=AsyncMock(return_value=None),
+        remove=AsyncMock(),
+    )
+    monkeypatch.setattr(chainlit_app, "QUOTA_SERVICE", quota_service)
+    monkeypatch.setattr(chainlit_app, "GENERATION_REGISTRY", generation_registry)
+    monkeypatch.setattr(
+        chainlit_app,
+        "build_client",
+        Mock(return_value=make_fake_client(ReturnsSuccessfulStream("he", "llo"))),
+    )
+
+    await chainlit_app.on_message(FakeMessage(content="user prompt", id="user-message-id"))
+
+    assert generation_registry.snapshot_due.await_count == 2
+    chainlit_app.persist_message_snapshot.assert_awaited_once()

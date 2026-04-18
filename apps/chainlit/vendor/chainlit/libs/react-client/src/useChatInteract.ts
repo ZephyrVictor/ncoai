@@ -24,6 +24,10 @@ import {
 } from 'src/state';
 import { IFileRef, IStep } from 'src/types';
 import { addMessage } from 'src/utils/message';
+import {
+  clearLocalGenerationSnapshot,
+  updateLocalGenerationSnapshot
+} from 'src/utils/localGeneration';
 import { v4 as uuidv4 } from 'uuid';
 
 import { ChainlitContext } from './context';
@@ -56,6 +60,7 @@ const useChatInteract = () => {
   const setFavoriteMessages = useSetRecoilState(favoriteMessagesState);
   const setThreadQuota = useSetRecoilState(threadQuotaState);
   const setUserQuota = useSetRecoilState(userQuotaState);
+  const currentThreadId = useRecoilValue(currentThreadIdState);
   const generationRef = useRef<IGenerationState>({ phase: 'idle' });
 
   const syncGenerationState = useCallback(
@@ -95,6 +100,7 @@ const useChatInteract = () => {
     setCurrentThreadId(undefined);
     setThreadQuota(undefined);
     setUserQuota(undefined);
+    clearLocalGenerationSnapshot();
   }, [resetGeneration, session]);
 
   const sendMessage = useCallback(
@@ -136,6 +142,13 @@ const useChatInteract = () => {
         phase: 'pending',
         assistantMessageId
       });
+      updateLocalGenerationSnapshot({
+        threadId: message.threadId || currentThreadId || '',
+        assistantMessageId,
+        partialOutput: '',
+        generationStatus: 'pending',
+        updatedAt: Date.now()
+      });
 
       session?.socket.emit('client_message', {
         message,
@@ -143,7 +156,13 @@ const useChatInteract = () => {
         assistantMessageId
       });
     },
-    [config?.ui?.name, session?.socket, setMessages, syncGenerationState]
+    [
+      config?.ui?.name,
+      currentThreadId,
+      session?.socket,
+      setMessages,
+      syncGenerationState
+    ]
   );
 
   const editMessage = useCallback(
@@ -249,6 +268,11 @@ const useChatInteract = () => {
     syncGenerationState({
       phase: 'stopping',
       assistantMessageId: activeAssistantMessageId
+    });
+    updateLocalGenerationSnapshot({
+      assistantMessageId: activeAssistantMessageId,
+      generationStatus: 'stopping',
+      updatedAt: Date.now()
     });
 
     setMessages((oldMessages) =>

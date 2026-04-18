@@ -86,6 +86,17 @@ class RuntimeSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class GlobalAdmissionSettings:
+    max_inflight: int
+    queue_timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataFlushSettings:
+    interval_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class ModelSettings:
     default_model: str
     default_model_display_name: str
@@ -163,6 +174,8 @@ class AppSettings:
     redis: RedisSettings
     litellm: LiteLLMSettings
     runtime: RuntimeSettings
+    admission: GlobalAdmissionSettings
+    metadata_flush: MetadataFlushSettings
     models: ModelSettings
     auth: AuthSettings
     admin: AdminSettings
@@ -183,6 +196,8 @@ def load_settings() -> AppSettings:
         "CHAINLIT_WORKER_ID",
         f"chainlit-{worker_index}",
     ).strip() or f"chainlit-{worker_index}"
+    max_num_seqs = max(int(os.getenv("MAX_NUM_SEQS", "128")), 1)
+    default_global_admission_limit = max(int(max_num_seqs * 0.8), 1)
     return AppSettings(
         database=DatabaseSettings(
             url=database_url,
@@ -220,7 +235,38 @@ def load_settings() -> AppSettings:
                 float(
                     os.getenv(
                         "CHAINLIT_STREAM_SNAPSHOT_INTERVAL_SECONDS",
-                        "0.75",
+                        "10",
+                    )
+                ),
+                0.1,
+            ),
+        ),
+        admission=GlobalAdmissionSettings(
+            max_inflight=max(
+                int(
+                    os.getenv(
+                        "CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT",
+                        str(default_global_admission_limit),
+                    )
+                ),
+                1,
+            ),
+            queue_timeout_seconds=max(
+                float(
+                    os.getenv(
+                        "CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS",
+                        os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "8"),
+                    )
+                ),
+                0.1,
+            ),
+        ),
+        metadata_flush=MetadataFlushSettings(
+            interval_seconds=max(
+                float(
+                    os.getenv(
+                        "CHAINLIT_METADATA_FLUSH_INTERVAL_SECONDS",
+                        "5",
                     )
                 ),
                 0.1,

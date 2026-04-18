@@ -5,7 +5,8 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
 
 import tiktoken
 from redis.asyncio import Redis
@@ -353,6 +354,9 @@ return {1}
         settings=SETTINGS,
         *,
         engine: AsyncEngine | None = None,
+        thread_metadata_callback: (
+            Callable[[str, Mapping[str, Any]], Awaitable[None] | None] | None
+        ) = None,
     ) -> None:
         self._settings = settings
         self._owns_engine = engine is None
@@ -372,6 +376,7 @@ return {1}
         )
         self._prompt_safety_tokens = settings.quota.prompt_safety_tokens
         self._encoder = tiktoken.get_encoding(settings.quota.tiktoken_encoding)
+        self._thread_metadata_callback = thread_metadata_callback
         self._minimum_user_request_tokens = (
             self.count_messages_tokens(
                 [
@@ -409,6 +414,12 @@ return {1}
             await self.initialize()
         if self._redis is None:
             raise RuntimeError("Quota Redis client is not available")
+
+    def set_thread_metadata_callback(
+        self,
+        callback: Callable[[str, Mapping[str, Any]], Awaitable[None] | None] | None,
+    ) -> None:
+        self._thread_metadata_callback = callback
 
     def count_text_tokens(self, value: str) -> int:
         if not value:
@@ -1013,6 +1024,14 @@ return {1}
     async def _persist_thread_metadata(
         self, thread_id: str, thread_summary: QuotaSummary
     ) -> None:
+        if self._thread_metadata_callback is not None:
+            result = self._thread_metadata_callback(
+                thread_id,
+                {"token_usage_summary": thread_summary.to_metadata_summary()},
+            )
+            if result is not None:
+                await result
+            return
         await self._repository.update_thread_metadata(
             thread_id=thread_id,
             token_usage_summary=thread_summary.to_metadata_summary(),

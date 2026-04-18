@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -14,6 +15,7 @@ from urllib.parse import quote, urlsplit
 
 import chainlit as cl
 import httpx
+from admission import AdmissionLease, GlobalAdmissionController
 from chainlit.auth import (
     create_jwt,
     decode_jwt,
@@ -41,6 +43,8 @@ from gzctf_team_token import (
     parse_team_token,
     verify_gzctf_team_token,
 )
+from generation_registry import ActiveGeneration, GenerationRegistry
+from metadata_buffer import ThreadMetadataBuffer
 from ncoai_shared.bootstrap import (
     bootstrap_team_token_auth_config as bootstrap_team_token_config,
 )
@@ -114,6 +118,17 @@ LITELLM_CLIENT = AsyncOpenAI(
 LITELLM_REQUEST_SEMAPHORE = asyncio.Semaphore(
     max(SETTINGS.litellm.max_concurrent_requests, 1)
 )
+GLOBAL_ADMISSION_CONTROLLER = GlobalAdmissionController(
+    redis_url=SETTINGS.redis.url,
+    max_inflight=SETTINGS.admission.max_inflight,
+    queue_timeout_seconds=SETTINGS.admission.queue_timeout_seconds,
+    worker_id=CHAINLIT_WORKER_ID,
+)
+GENERATION_REGISTRY = GenerationRegistry()
+THREAD_METADATA_BUFFER = ThreadMetadataBuffer(
+    data_layer=DATA_LAYER,
+    interval_seconds=SETTINGS.metadata_flush.interval_seconds,
+)
 
 LOGGER.info(
     "Configured Chainlit runtime worker_id=%s worker_index=%s worker_count=%s snapshot_interval=%ss",
@@ -139,6 +154,15 @@ LOGGER.info(
     LITELLM_MAX_KEEPALIVE_CONNECTIONS,
     SETTINGS.litellm.max_concurrent_requests,
     SETTINGS.litellm.queue_timeout_seconds,
+)
+LOGGER.info(
+    "Configured global admission max_inflight=%s queue_timeout=%ss",
+    SETTINGS.admission.max_inflight,
+    SETTINGS.admission.queue_timeout_seconds,
+)
+LOGGER.info(
+    "Configured async metadata flush interval=%ss",
+    SETTINGS.metadata_flush.interval_seconds,
 )
 
 try:
@@ -468,6 +492,10 @@ def clear_generation_status(metadata: dict[str, Any] | None) -> dict[str, Any] |
     return next_metadata or None
 
 
+class UpstreamQueueTimeoutError(RuntimeError):
+    pass
+
+
 async def close_async_resource(resource: Any | None, *, label: str) -> None:
     if resource is None:
         return
@@ -519,17 +547,91 @@ def parse_thread_metadata(thread: ThreadDict) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-async def persist_message_snapshot(message: cl.Message) -> None:
+def parse_step_metadata(step: Mapping[str, Any]) -> dict[str, Any]:
+    raw = step.get("metadata") or {}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def find_step_by_id(
+    steps: list[dict[str, Any]] | list[ThreadDict],
+    step_id: str,
+) -> dict[str, Any] | None:
+    for step in steps:
+        if str(step.get("id") or "") == step_id:
+            return step
+        nested_steps = step.get("steps") or []
+        if nested_steps:
+            found = find_step_by_id(nested_steps, step_id)
+            if found is not None:
+                return found
+    return None
+
+
+def generation_is_terminal(status: str | None) -> bool:
+    return status in {"stopped", "completed", "done", "error", "failed"}
+
+
+def apply_generation_overlay_to_step(
+    step: dict[str, Any],
+    entry: ActiveGeneration,
+) -> bool:
+    metadata = parse_step_metadata(step)
+    existing_output = str(step.get("output") or "")
+    next_output = entry.partial_output
+    next_status = entry.generation_status
+    updated = False
+
+    if len(next_output) >= len(existing_output) and next_output != existing_output:
+        step["output"] = next_output
+        updated = True
+
+    next_streaming = not generation_is_terminal(next_status)
+    if bool(step.get("streaming")) != next_streaming:
+        step["streaming"] = next_streaming
+        updated = True
+
+    if metadata.get("generation_status") != next_status:
+        if next_status:
+            metadata["generation_status"] = next_status
+        else:
+            metadata.pop("generation_status", None)
+        updated = True
+
+    if updated:
+        step["metadata"] = metadata or None
+    return updated
+
+
+async def persist_step_snapshot(step_dict: dict[str, Any]) -> None:
     data_layer = get_data_layer()
     if not data_layer:
         return
 
     try:
-        await data_layer.update_step(message.to_dict())
+        await data_layer.update_step(step_dict)
     except Exception as exc:  # pragma: no cover - operational path
         LOGGER.warning(
-            "Failed to persist message snapshot for %s: %s", message.id, exc
+            "Failed to persist step snapshot for %s: %s",
+            step_dict.get("id"),
+            exc,
         )
+
+    thread_id = str(step_dict.get("threadId") or "")
+    step_id = str(step_dict.get("id") or "")
+    if thread_id and step_id:
+        entry = await GENERATION_REGISTRY.get(thread_id)
+        if entry is not None and entry.assistant_message_id == step_id:
+            await GENERATION_REGISTRY.mark_snapshot(thread_id)
+
+
+async def persist_message_snapshot(message: cl.Message) -> None:
+    await persist_step_snapshot(message.to_dict())
 
 
 async def emit_message_placeholder(message: cl.Message) -> None:
@@ -550,11 +652,14 @@ async def emit_message_update(message: cl.Message) -> None:
         await persist_message_snapshot(message)
 
 
-async def persist_request_metadata(request_id: str | None, model_name: str) -> None:
-    data_layer = get_data_layer()
-    if not data_layer:
-        return
+async def enqueue_thread_metadata_patch(
+    thread_id: str,
+    patch: Mapping[str, Any],
+) -> None:
+    await THREAD_METADATA_BUFFER.enqueue(thread_id, patch)
 
+
+async def persist_request_metadata(request_id: str | None, model_name: str) -> None:
     metadata = context.session.to_persistable()
     metadata["selected_model"] = model_name
     metadata["chainlit_thread_id"] = context.session.thread_id
@@ -562,10 +667,44 @@ async def persist_request_metadata(request_id: str | None, model_name: str) -> N
     if request_id:
         metadata["last_request_id"] = request_id
 
-    await data_layer.update_thread(
-        thread_id=context.session.thread_id,
-        metadata=metadata,
+    await enqueue_thread_metadata_patch(
+        context.session.thread_id,
+        metadata,
     )
+
+
+async def hydrate_thread_from_generation_registry(thread: ThreadDict) -> None:
+    thread_id = str(thread.get("id") or "")
+    if not thread_id:
+        return
+
+    entry = await GENERATION_REGISTRY.get(thread_id)
+    if entry is None:
+        return
+
+    steps = thread.get("steps") or []
+    step = find_step_by_id(steps, entry.assistant_message_id)
+    registry_is_newer = False
+
+    if step is None:
+        step = {
+            "id": entry.assistant_message_id,
+            "threadId": thread_id,
+            "name": "Assistant",
+            "type": "assistant_message",
+            "output": entry.partial_output,
+            "createdAt": entry.updated_at,
+            "streaming": not generation_is_terminal(entry.generation_status),
+            "metadata": message_metadata_with_status(entry.generation_status),
+        }
+        steps.append(step)
+        thread["steps"] = steps
+        registry_is_newer = True
+    else:
+        registry_is_newer = apply_generation_overlay_to_step(step, entry)
+
+    if registry_is_newer:
+        await persist_step_snapshot(step)
 
 
 def build_team_user(game_id: int, team_id: int) -> User:
@@ -1173,25 +1312,34 @@ async def shutdown_team_token_auth_runtime() -> None:
 
 async def shutdown_application_runtime() -> None:
     try:
-        await DATA_LAYER.close()
+        await THREAD_METADATA_BUFFER.close()
     finally:
         try:
-            await QUOTA_SERVICE.close()
+            await GLOBAL_ADMISSION_CONTROLLER.close()
         finally:
             try:
-                await close_async_resource(
-                    LITELLM_CLIENT,
-                    label="LiteLLM shared client",
-                )
-                await close_async_resource(
-                    LITELLM_HTTP_CLIENT,
-                    label="LiteLLM shared httpx client",
-                )
+                await DATA_LAYER.close()
             finally:
-                await CONTROL_PLANE_ENGINE.dispose()
+                try:
+                    await QUOTA_SERVICE.close()
+                finally:
+                    try:
+                        await close_async_resource(
+                            LITELLM_CLIENT,
+                            label="LiteLLM shared client",
+                        )
+                        await close_async_resource(
+                            LITELLM_HTTP_CLIENT,
+                            label="LiteLLM shared httpx client",
+                        )
+                    finally:
+                        await CONTROL_PLANE_ENGINE.dispose()
 
 
 async def chainlit_app_startup() -> None:
+    QUOTA_SERVICE.set_thread_metadata_callback(enqueue_thread_metadata_patch)
+    await GLOBAL_ADMISSION_CONTROLLER.initialize()
+    await THREAD_METADATA_BUFFER.start()
     await startup_team_token_auth_runtime()
 
 
@@ -1265,6 +1413,7 @@ async def on_chat_start() -> None:
 async def on_chat_resume(thread: ThreadDict) -> None:
     if not await ensure_active_chat_session_allowed():
         return
+    await hydrate_thread_from_generation_registry(thread)
     metadata = parse_thread_metadata(thread)
     selected_model = metadata.get("selected_model")
     if selected_model not in available_models():
@@ -1287,12 +1436,12 @@ async def on_message(message: cl.Message) -> None:
     reservation = None
     provider_request_id: str | None = None
     usage = None
-    last_snapshot_at = 0.0
     snapshot_interval_seconds = SETTINGS.runtime.stream_snapshot_interval_seconds
     stream_delivery_failed = False
     client: AsyncOpenAI | None = None
     stream = None
     assistant_placeholder_sent = False
+    global_admission_lease: AdmissionLease | None = None
     litellm_slot_acquired = False
     queue_notice_shown = False
     queue_wait_seconds = 0.0
@@ -1310,38 +1459,61 @@ async def on_message(message: cl.Message) -> None:
     ]
 
     try:
+        await emit_message_placeholder(assistant_message)
+        assistant_placeholder_sent = True
+        await GENERATION_REGISTRY.start(
+            thread_id=thread_id,
+            assistant_message_id=assistant_message.id,
+            partial_output="",
+            generation_status="pending",
+        )
+
+        client = build_client()
+        queue_wait_expected = LITELLM_REQUEST_SEMAPHORE.locked()
+        if not queue_wait_expected:
+            queue_wait_expected = await GLOBAL_ADMISSION_CONTROLLER.is_saturated()
+        if queue_wait_expected:
+            assistant_message.metadata = message_metadata_with_status("queued")
+            assistant_message.content = "系统繁忙，正在排队，请稍候..."
+            await GENERATION_REGISTRY.set_status(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                generation_status="queued",
+            )
+            await emit_message_update(assistant_message)
+            queue_notice_shown = True
+
+        global_admission_lease, queue_wait_seconds = (
+            await GLOBAL_ADMISSION_CONTROLLER.acquire()
+        )
+        if global_admission_lease is None:
+            raise UpstreamQueueTimeoutError("当前请求较多，排队等待超时，请稍后重试。")
+
+        litellm_slot_acquired, local_wait_seconds = await acquire_litellm_request_slot()
+        queue_wait_seconds += local_wait_seconds
+        if not litellm_slot_acquired:
+            raise UpstreamQueueTimeoutError("当前请求较多，排队等待超时，请稍后重试。")
+        if queue_notice_shown:
+            assistant_message.content = ""
+            assistant_message.metadata = message_metadata_with_status("pending")
+            await GENERATION_REGISTRY.set_status(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                generation_status="pending",
+            )
+            await emit_message_update(assistant_message)
+            LOGGER.info(
+                "Upstream slot acquired after queue wait %.2fs (user=%s thread=%s)",
+                queue_wait_seconds,
+                user_identifier,
+                thread_id,
+            )
         reservation = await QUOTA_SERVICE.reserve(
             thread_id=thread_id,
             user_identifier=user_identifier,
             step_id=assistant_message.id,
             messages=llm_messages,
         )
-        await emit_message_placeholder(assistant_message)
-        assistant_placeholder_sent = True
-
-        client = build_client()
-        queue_wait_expected = LITELLM_REQUEST_SEMAPHORE.locked()
-        if queue_wait_expected:
-            assistant_message.metadata = message_metadata_with_status("queued")
-            assistant_message.content = "系统繁忙，正在排队，请稍候..."
-            await emit_message_update(assistant_message)
-            queue_notice_shown = True
-
-        litellm_slot_acquired, queue_wait_seconds = await acquire_litellm_request_slot()
-        if not litellm_slot_acquired:
-            raise RuntimeError(
-                "当前请求较多，排队等待超时，请稍后重试。"
-            )
-        if queue_notice_shown:
-            assistant_message.content = ""
-            assistant_message.metadata = message_metadata_with_status("pending")
-            await emit_message_update(assistant_message)
-            LOGGER.info(
-                "LiteLLM slot acquired after queue wait %.2fs (user=%s thread=%s)",
-                queue_wait_seconds,
-                user_identifier,
-                thread_id,
-            )
         stream = await client.chat.completions.create(
             model=model_name,
             messages=llm_messages,
@@ -1375,6 +1547,12 @@ async def on_message(message: cl.Message) -> None:
                 assistant_message.metadata = clear_generation_status(
                     assistant_message.metadata
                 )
+                await GENERATION_REGISTRY.append_token(
+                    thread_id=thread_id,
+                    assistant_message_id=assistant_message.id,
+                    token=token,
+                    generation_status="streaming",
+                )
                 try:
                     await assistant_message.stream_token(token)
                 except Exception as exc:  # pragma: no cover - operational path
@@ -1385,9 +1563,12 @@ async def on_message(message: cl.Message) -> None:
                             exc,
                         )
                         stream_delivery_failed = True
-                if monotonic() - last_snapshot_at >= snapshot_interval_seconds:
+                if await GENERATION_REGISTRY.snapshot_due(
+                    thread_id=thread_id,
+                    assistant_message_id=assistant_message.id,
+                    interval_seconds=snapshot_interval_seconds,
+                ):
                     await persist_message_snapshot(assistant_message)
-                    last_snapshot_at = monotonic()
 
         settlement = await QUOTA_SERVICE.settle(
             reservation=reservation,
@@ -1396,6 +1577,7 @@ async def on_message(message: cl.Message) -> None:
             usage=usage,
         )
         APP_METRICS.record_upstream_request("litellm", "success")
+        assistant_message.streaming = False
         assistant_message.metadata = message_metadata_with_status(
             None,
             token_usage=settlement.to_message_metadata(),
@@ -1403,6 +1585,7 @@ async def on_message(message: cl.Message) -> None:
         if provider_request_id:
             cl.user_session.set("last_request_id", provider_request_id)
         await persist_request_metadata(provider_request_id, model_name)
+        await persist_message_snapshot(assistant_message)
         await emit_message_update(assistant_message)
     except asyncio.CancelledError:
         current_task = asyncio.current_task()
@@ -1445,6 +1628,13 @@ async def on_message(message: cl.Message) -> None:
                 "stopped",
                 token_usage=token_usage_metadata,
             )
+            await GENERATION_REGISTRY.set_content(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                partial_output=assistant_message.content,
+                generation_status="stopped",
+            )
+            await persist_message_snapshot(assistant_message)
             await emit_message_update(assistant_message)
         return
     except QuotaExceededError as exc:
@@ -1456,15 +1646,48 @@ async def on_message(message: cl.Message) -> None:
                 summary=exc.thread_summary,
                 message=str(exc),
             )
-        await cl.Message(
-            content=str(exc),
-            metadata=quota_message_metadata(
-                exc.scope,
-                str(exc),
-                thread_summary.to_metadata_summary(),
-                exc.user_summary.to_api_dict(),
-            ),
-        ).send()
+        quota_metadata = quota_message_metadata(
+            exc.scope,
+            str(exc),
+            thread_summary.to_metadata_summary(),
+            exc.user_summary.to_api_dict(),
+        )
+        if assistant_placeholder_sent:
+            assistant_message.streaming = False
+            assistant_message.content = str(exc)
+            assistant_message.metadata = quota_metadata
+            await GENERATION_REGISTRY.set_content(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                partial_output=assistant_message.content,
+                generation_status="stopped",
+            )
+            await persist_message_snapshot(assistant_message)
+            await emit_message_update(assistant_message)
+        else:
+            await cl.Message(
+                content=str(exc),
+                metadata=quota_metadata,
+            ).send()
+    except UpstreamQueueTimeoutError as exc:
+        APP_METRICS.record_upstream_request("litellm", "queue_timeout")
+        if assistant_placeholder_sent:
+            assistant_message.is_error = True
+            assistant_message.streaming = False
+            assistant_message.metadata = clear_generation_status(
+                assistant_message.metadata
+            )
+            assistant_message.content = str(exc)
+            await GENERATION_REGISTRY.set_content(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                partial_output=assistant_message.content,
+                generation_status="stopped",
+            )
+            await persist_message_snapshot(assistant_message)
+            await emit_message_update(assistant_message)
+        else:
+            await cl.Message(content=str(exc)).send()
     except Exception as exc:  # pragma: no cover - operational path
         LOGGER.exception("LiteLLM chat request failed")
         APP_METRICS.record_upstream_request(
@@ -1494,6 +1717,13 @@ async def on_message(message: cl.Message) -> None:
             if provider_request_id:
                 cl.user_session.set("last_request_id", provider_request_id)
             await persist_request_metadata(provider_request_id, model_name)
+            await GENERATION_REGISTRY.set_content(
+                thread_id=thread_id,
+                assistant_message_id=assistant_message.id,
+                partial_output=assistant_message.content,
+                generation_status="stopped",
+            )
+            await persist_message_snapshot(assistant_message)
             await emit_message_update(assistant_message)
         else:
             if reservation:
@@ -1501,10 +1731,18 @@ async def on_message(message: cl.Message) -> None:
                 await persist_request_metadata(provider_request_id, model_name)
             if assistant_placeholder_sent:
                 assistant_message.is_error = True
+                assistant_message.streaming = False
                 assistant_message.metadata = clear_generation_status(
                     assistant_message.metadata
                 )
                 assistant_message.content = error_message
+                await GENERATION_REGISTRY.set_content(
+                    thread_id=thread_id,
+                    assistant_message_id=assistant_message.id,
+                    partial_output=assistant_message.content,
+                    generation_status="stopped",
+                )
+                await persist_message_snapshot(assistant_message)
                 await emit_message_update(assistant_message)
             else:
                 await cl.Message(content=error_message).send()
@@ -1512,3 +1750,8 @@ async def on_message(message: cl.Message) -> None:
         await close_async_resource(stream, label="LLM stream")
         if litellm_slot_acquired:
             LITELLM_REQUEST_SEMAPHORE.release()
+        await GLOBAL_ADMISSION_CONTROLLER.release(global_admission_lease)
+        await GENERATION_REGISTRY.remove(
+            thread_id=thread_id,
+            assistant_message_id=assistant_message.id,
+        )

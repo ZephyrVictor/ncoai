@@ -137,6 +137,21 @@ def test_load_settings_splits_shared_capacities_per_worker(monkeypatch) -> None:
     assert loaded.litellm.max_concurrent_requests == 55
 
 
+def test_load_settings_reads_admission_and_metadata_flush_env(monkeypatch) -> None:
+    monkeypatch.setenv("MAX_NUM_SEQS", "200")
+    monkeypatch.setenv("CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT", "144")
+    monkeypatch.setenv("CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS", "4.5")
+    monkeypatch.setenv("CHAINLIT_METADATA_FLUSH_INTERVAL_SECONDS", "3")
+    monkeypatch.setenv("CHAINLIT_STREAM_SNAPSHOT_INTERVAL_SECONDS", "10")
+
+    loaded = chainlit_settings.load_settings()
+
+    assert loaded.runtime.stream_snapshot_interval_seconds == 10.0
+    assert loaded.admission.max_inflight == 144
+    assert loaded.admission.queue_timeout_seconds == 4.5
+    assert loaded.metadata_flush.interval_seconds == 3.0
+
+
 def test_build_async_engine_kwargs_reflect_pool_settings() -> None:
     pool_settings = chainlit_settings.DatabasePoolSettings(
         size=20,
@@ -283,6 +298,56 @@ async def test_quota_settle_avoids_reaggregating_window_usage(monkeypatch) -> No
 
     assert settlement.total_tokens == 84
     sum_user_window_usage.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quota_thread_metadata_callback_replaces_sync_write(monkeypatch) -> None:
+    captured: list[tuple[str, dict[str, object]]] = []
+    service = chainlit_quota.QuotaService(
+        "postgresql+asyncpg://user:pass@localhost/db",
+        settings=chainlit_quota.SETTINGS,
+        engine=object(),
+        thread_metadata_callback=lambda thread_id, patch: captured.append(
+            (thread_id, dict(patch))
+        ),
+    )
+
+    update_thread_metadata = AsyncMock()
+    monkeypatch.setattr(
+        service._repository,
+        "update_thread_metadata",
+        update_thread_metadata,
+    )
+
+    await service._persist_thread_metadata(
+        "thread-1",
+        chainlit_quota.QuotaSummary(
+            used_tokens=12,
+            reserved_tokens=0,
+            limit_tokens=1024,
+        ),
+    )
+
+    update_thread_metadata.assert_not_called()
+    assert captured == [
+        (
+            "thread-1",
+            {
+                "token_usage_summary": {
+                    "used_tokens": 12,
+                    "reserved_tokens": 0,
+                    "limit_tokens": 1024,
+                    "remaining_tokens": 1012,
+                    "policy_version": 0,
+                    "updated_at": None,
+                    "window_start": None,
+                    "window_end": None,
+                    "status": "ok",
+                    "message": None,
+                }
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,15 @@ import {
   updateMessageById,
   updateMessageContentById
 } from 'src/utils/message';
+import {
+  appendLocalGenerationToken,
+  clearLocalGenerationSnapshot,
+  clearLocalResyncingFromMessage,
+  mergeThreadWithLocalGeneration,
+  readLocalGenerationSnapshot,
+  trackLocalGenerationFromStep,
+  updateLocalGenerationSnapshot
+} from 'src/utils/localGeneration';
 
 import { OutputAudioChunk } from './types/audio';
 
@@ -347,6 +356,7 @@ const useChatSession = () => {
 
         if (!assistantMessageId) {
           syncGenerationState(toIdleGenerationState());
+          clearLocalGenerationSnapshot();
           return;
         }
 
@@ -368,7 +378,9 @@ const useChatSession = () => {
           const nextMetadata = assistantMessage.metadata
             ? Object.fromEntries(
                 Object.entries(assistantMessage.metadata).filter(
-                  ([key]) => key !== 'optimistic'
+                  ([key]) =>
+                    key !== 'optimistic' &&
+                    key !== 'local_generation_resyncing'
                 )
               )
             : undefined;
@@ -383,6 +395,7 @@ const useChatSession = () => {
           });
         });
 
+        clearLocalGenerationSnapshot(assistantMessageId);
         syncGenerationState(toIdleGenerationState());
       });
 
@@ -438,37 +451,42 @@ const useChatSession = () => {
       });
 
       const hydrateThread = (thread: IThread) => {
+        const hydratedThread = mergeThreadWithLocalGeneration(thread);
         const isReadOnlyView = Boolean(
-          (thread as any)?.metadata?.viewer_read_only
+          (hydratedThread as any)?.metadata?.viewer_read_only
         );
-        if (!isReadOnlyView && idToResume && thread.id !== idToResume) {
-          window.location.href = `/thread/${thread.id}`;
+        if (!isReadOnlyView && idToResume && hydratedThread.id !== idToResume) {
+          window.location.href = `/thread/${hydratedThread.id}`;
           return;
         }
         if (!isReadOnlyView && idToResume) {
-          setCurrentThreadId(thread.id);
+          setCurrentThreadId(hydratedThread.id);
         }
 
         let messages: IStep[] = [];
-        for (const step of thread.steps) {
+        for (const step of hydratedThread.steps) {
           messages = addMessage(messages, step);
         }
-        if (thread.metadata?.chat_profile) {
-          setChatProfile(thread.metadata?.chat_profile);
+        if (hydratedThread.metadata?.chat_profile) {
+          setChatProfile(hydratedThread.metadata?.chat_profile);
         }
-        if (thread.metadata?.chat_settings) {
-          setChatSettingsValue(thread.metadata?.chat_settings);
+        if (hydratedThread.metadata?.chat_settings) {
+          setChatSettingsValue(hydratedThread.metadata?.chat_settings);
         }
-        const threadTokenSummary = thread.metadata?.token_usage_summary as
+        const threadTokenSummary = hydratedThread.metadata?.token_usage_summary as
           | IQuotaSummary
           | undefined;
         setThreadQuota(undefined);
-        applyQuotaFromSteps(thread.steps || [], setThreadQuota, setUserQuota);
+        applyQuotaFromSteps(
+          hydratedThread.steps || [],
+          setThreadQuota,
+          setUserQuota
+        );
         if (threadTokenSummary) {
           setThreadQuota((prev) => mergeQuotaSummary(threadTokenSummary, prev));
         }
         setMessages(messages);
-        const elements = thread.elements || [];
+        const elements = hydratedThread.elements || [];
         setTasklists(
           (elements as ITasklistElement[]).filter((e) => e.type === 'tasklist')
         );
@@ -539,6 +557,7 @@ const useChatSession = () => {
 
       socket.on('new_message', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
+        trackLocalGenerationFromStep(message, currentThreadId);
         setMessages((oldMessages) => addMessage(oldMessages, message));
       });
 
@@ -547,11 +566,20 @@ const useChatSession = () => {
         (event: { interaction: string; thread_id: string }) => {
           setFirstUserInteraction(event.interaction);
           setCurrentThreadId(event.thread_id);
+          const localGeneration = readLocalGenerationSnapshot();
+          if (localGeneration?.assistantMessageId) {
+            updateLocalGenerationSnapshot({
+              assistantMessageId: localGeneration.assistantMessageId,
+              threadId: event.thread_id,
+              updatedAt: Date.now()
+            });
+          }
         }
       );
 
       socket.on('update_message', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
+        trackLocalGenerationFromStep(message, currentThreadId);
         setMessages((oldMessages) => {
           const activeGeneration = generationRef.current;
           const activeAssistantMessageId = activeGeneration.assistantMessageId;
@@ -572,7 +600,11 @@ const useChatSession = () => {
             });
           }
 
-          return updateMessageById(oldMessages, message.id, message);
+          return updateMessageById(
+            oldMessages,
+            message.id,
+            clearLocalResyncingFromMessage(message)
+          );
         });
       });
 
@@ -584,6 +616,7 @@ const useChatSession = () => {
 
       socket.on('stream_start', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
+        trackLocalGenerationFromStep(message, currentThreadId);
         const activeGeneration = generationRef.current;
         if (
           activeGeneration.phase === 'stopping' &&
@@ -612,15 +645,33 @@ const useChatSession = () => {
             return;
           }
 
-          setMessages((oldMessages) =>
-            updateMessageContentById(
+          appendLocalGenerationToken({
+            assistantMessageId: String(id),
+            token,
+            isSequence
+          });
+          setMessages((oldMessages) => {
+            const nextMessages = updateMessageContentById(
               oldMessages,
               id,
               token,
               isSequence,
               isInput
-            )
-          );
+            );
+            const existingMessage = findMessageById(nextMessages, String(id));
+            if (!existingMessage) {
+              return nextMessages;
+            }
+
+            return updateMessageById(nextMessages, String(id), {
+              ...existingMessage,
+              streaming: true,
+              metadata: {
+                ...(existingMessage.metadata || {}),
+                generation_status: 'streaming'
+              }
+            });
+          });
 
           if (activeGeneration.assistantMessageId === id) {
             syncGenerationState({
@@ -787,7 +838,16 @@ const useChatSession = () => {
         }
       });
     },
-    [chatProfile, client, idToResume, sessionId, setGeneration, setSession, syncGenerationState]
+    [
+      chatProfile,
+      client,
+      currentThreadId,
+      idToResume,
+      sessionId,
+      setGeneration,
+      setSession,
+      syncGenerationState
+    ]
   );
 
   const connect = useCallback(debounce(_connect, 200), [_connect]);
