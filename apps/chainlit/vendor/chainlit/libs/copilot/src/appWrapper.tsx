@@ -56,8 +56,10 @@ export default function AppWrapper({ widgetConfig }: Props) {
           if (!fontLoaded) {
             const linkEl = document.createElement('link');
             linkEl.rel = 'stylesheet';
-            linkEl.href =
-              'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap';
+            linkEl.href = `${widgetConfig.chainlitServer.replace(
+              /\/$/,
+              ''
+            )}/vendor/inter/inter.css`;
             window.cl_shadowRootElement.getRootNode().appendChild(linkEl);
           }
           completeInitialization();

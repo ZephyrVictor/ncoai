@@ -7,6 +7,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
+UPLOAD_ONLY_FTP_PERMISSIONS = "elwa"
+FULL_ACCESS_FTP_PERMISSIONS = "elradfmwMT"
+
 
 def ensure_caps_storage_root_ready(storage_root: Path) -> None:
     storage_root.mkdir(parents=True, exist_ok=True)
@@ -60,6 +63,8 @@ class CapsFTPServerRuntime:
         port: int,
         username: str,
         password: str,
+        admin_username: str | None = None,
+        admin_password: str | None = None,
         storage_root: Path,
         passive_ports: tuple[int, ...] | None = None,
         public_host: str | None = None,
@@ -73,6 +78,12 @@ class CapsFTPServerRuntime:
         self._port = port
         self._username = username
         self._password = password
+        self._admin_username = (
+            str(admin_username).strip() if admin_username is not None else None
+        ) or None
+        self._admin_password = (
+            str(admin_password).strip() if admin_password is not None else None
+        ) or None
         self._storage_root = storage_root.expanduser().resolve()
         self._passive_ports = tuple(passive_ports or ())
         self._public_host = str(public_host or "").strip() or None
@@ -103,6 +114,14 @@ class CapsFTPServerRuntime:
             raise RuntimeError("caps FTP port must be between 0 and 65535")
         if not self._username or not self._password:
             raise RuntimeError("caps FTP credentials are required")
+        if (self._admin_username is None) != (self._admin_password is None):
+            raise RuntimeError(
+                "caps FTP admin credentials must include both username and password"
+            )
+        if self._admin_username == self._username:
+            raise RuntimeError(
+                "caps FTP admin username must differ from the upload-only username"
+            )
         if not self._passive_ports:
             raise RuntimeError("caps FTP passive port range is required")
         if self._tls_enabled and not self._tls_certfile:
@@ -139,8 +158,15 @@ class CapsFTPServerRuntime:
             self._username,
             self._password,
             str(self._storage_root),
-            perm="elwa",
+            perm=UPLOAD_ONLY_FTP_PERMISSIONS,
         )
+        if self._admin_username and self._admin_password:
+            authorizer.add_user(
+                self._admin_username,
+                self._admin_password,
+                str(self._storage_root),
+                perm=FULL_ACCESS_FTP_PERMISSIONS,
+            )
 
         if self._tls_enabled:
             handler_base = TLS_FTPHandler

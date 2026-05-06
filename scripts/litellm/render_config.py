@@ -54,10 +54,21 @@ def main() -> int:
     output_path.write_text(prepared.rendered_config, encoding="utf-8")
 
     print(f"[INFO] Rendered LiteLLM config: {output_path}")
-    print(f"[INFO] Primary vLLM api_base: {prepared.settings.primary_endpoint.api_base}")
-    if prepared.settings.backup_endpoint is not None:
+    if prepared.settings.lastdance_enabled:
         print(
-            f"[INFO] Backup vLLM api_base: {prepared.settings.backup_endpoint.api_base}"
+            "[INFO] Lastdance mode enabled, all traffic routed to BigModel "
+            f"via {prepared.settings.lastdance_endpoint.api_base}"
+        )
+        print(
+            f"[INFO] Lastdance target model: {prepared.settings.lastdance_target_model}"
+        )
+    else:
+        print(
+            f"[INFO] Primary router api_base: {prepared.settings.lastdance_endpoint.api_base}"
+        )
+        print(
+            "[INFO] Local vLLM origin behind router: "
+            f"{prepared.settings.primary_endpoint.origin}"
         )
     for warning in prepared.warnings:
         print(f"[WARN] {warning}", file=sys.stderr)

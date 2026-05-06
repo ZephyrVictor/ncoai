@@ -32,7 +32,7 @@ STATE_DIR = ROOT / ".local" / "devctl"
 PID_DIR = STATE_DIR / "pids"
 LOG_DIR = STATE_DIR / "logs"
 TMUX_SESSION = "ncoai-dev"
-DEFAULT_START_ORDER = ("vllm", "litellm", "caps-ftp", "chainlit", "admin")
+DEFAULT_START_ORDER = ("vllm", "lastdance-proxy", "litellm", "caps-ftp", "chainlit", "admin")
 DEFAULT_STOP_ORDER = tuple(reversed(DEFAULT_START_ORDER))
 LOG_RETENTION_TIMEZONE = ZoneInfo("Asia/Shanghai")
 LOG_RELAY_POLL_INTERVAL_SECONDS = 1.0
@@ -72,6 +72,12 @@ SERVICES: dict[str, ServiceDefinition] = {
         script_relpath="scripts/litellm/start-local.sh",
         final_markers=(str(ROOT / ".local" / "generated" / "litellm.config.yaml"), "litellm"),
         readiness_timeout_seconds=180.0,
+    ),
+    "lastdance-proxy": ServiceDefinition(
+        name="lastdance-proxy",
+        script_relpath="scripts/lastdance/start-local.sh",
+        final_markers=("apps/lastdance_proxy/app.py", "uvicorn app:app"),
+        readiness_timeout_seconds=60.0,
     ),
     "chainlit": ServiceDefinition(
         name="chainlit",
@@ -451,6 +457,11 @@ def service_readiness_urls(
         return [
             f"http://127.0.0.1:{port}/health",
             f"http://127.0.0.1:{port}/v1/models",
+        ]
+    if service == "lastdance-proxy":
+        return [
+            "http://127.0.0.1:12234/health",
+            "http://127.0.0.1:12234/v1/models",
         ]
     if service == "chainlit":
         port = merged_env.get("CHAINLIT_PORT", "3100")

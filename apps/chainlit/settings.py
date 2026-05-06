@@ -145,6 +145,8 @@ class CapsSettings:
     ftp_port: int
     ftp_username: str
     ftp_password: str
+    ftp_admin_username: str | None
+    ftp_admin_password: str | None
     ftp_passive_port_start: int
     ftp_passive_port_end: int
     ftp_public_host: str | None
@@ -364,6 +366,12 @@ def load_settings() -> AppSettings:
             ftp_port=int(os.getenv("CAPS_FTP_PORT", "3221")),
             ftp_username=os.getenv("CAPS_FTP_USERNAME", "").strip(),
             ftp_password=os.getenv("CAPS_FTP_PASSWORD", "").strip(),
+            ftp_admin_username=(
+                os.getenv("CAPS_FTP_ADMIN_USERNAME", "").strip() or None
+            ),
+            ftp_admin_password=(
+                os.getenv("CAPS_FTP_ADMIN_PASSWORD", "").strip() or None
+            ),
             ftp_passive_port_start=int(
                 os.getenv("CAPS_FTP_PASSIVE_PORT_START", "41000")
             ),

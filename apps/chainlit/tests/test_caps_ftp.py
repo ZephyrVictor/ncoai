@@ -41,6 +41,8 @@ def caps_mode(monkeypatch, tmp_path):
         ftp_port=0,
         ftp_username="nco_ftp",
         ftp_password="uploadcaps0731!",
+        ftp_admin_username="admin",
+        ftp_admin_password="nervergonnagiveyouup",
         ftp_passive_port_start=42100,
         ftp_passive_port_end=42109,
         ftp_public_host=None,
@@ -126,6 +128,8 @@ def test_build_caps_ftp_runtime_uses_fixed_credentials(caps_mode) -> None:
     assert isinstance(runtime, CapsFTPServerRuntime)
     assert runtime._username == "nco_ftp"
     assert runtime._password == "uploadcaps0731!"
+    assert runtime._admin_username == "admin"
+    assert runtime._admin_password == "nervergonnagiveyouup"
     assert runtime._storage_root == caps_mode["game_root"]
     assert runtime._tls_enabled is False
 
@@ -139,6 +143,8 @@ def test_caps_ftp_runtime_supports_fixed_account_upload_only_permissions(tmp_pat
         port=0,
         username="nco_ftp",
         password="uploadcaps0731!",
+        admin_username="admin",
+        admin_password="nervergonnagiveyouup",
         storage_root=storage_root,
         passive_ports=tuple(range(42110, 42120)),
     )
@@ -174,6 +180,57 @@ def test_caps_ftp_runtime_supports_fixed_account_upload_only_permissions(tmp_pat
             runtime.stop()
 
 
+def test_caps_ftp_runtime_supports_admin_account_full_permissions(tmp_path) -> None:
+    storage_root = tmp_path / "caps"
+    storage_root.mkdir()
+
+    runtime = CapsFTPServerRuntime(
+        host="127.0.0.1",
+        port=0,
+        username="nco_ftp",
+        password="uploadcaps0731!",
+        admin_username="admin",
+        admin_password="nervergonnagiveyouup",
+        storage_root=storage_root,
+        passive_ports=tuple(range(42140, 42150)),
+    )
+
+    runtime.start()
+    upload_ftp = FTP()
+    admin_ftp = FTP()
+    try:
+        assert runtime.port is not None
+
+        upload_ftp.connect("127.0.0.1", runtime.port, timeout=5)
+        upload_ftp.login("nco_ftp", "uploadcaps0731!")
+        upload_ftp.storbinary("STOR solve.mp4", io.BytesIO(b"abc"))
+        upload_ftp.storbinary("APPE solve.mp4", io.BytesIO(b"def"))
+
+        with pytest.raises(error_perm):
+            upload_ftp.retrbinary("RETR solve.mp4", lambda _: None)
+
+        admin_ftp.connect("127.0.0.1", runtime.port, timeout=5)
+        admin_ftp.login("admin", "nervergonnagiveyouup")
+        assert admin_ftp.nlst() == ["solve.mp4"]
+
+        downloaded = bytearray()
+        admin_ftp.retrbinary("RETR solve.mp4", downloaded.extend)
+        assert bytes(downloaded) == b"abcdef"
+
+        admin_ftp.rename("solve.mp4", "renamed.mp4")
+        assert admin_ftp.nlst() == ["renamed.mp4"]
+
+        admin_ftp.delete("renamed.mp4")
+        assert admin_ftp.nlst() == []
+    finally:
+        for client in (admin_ftp, upload_ftp):
+            try:
+                client.close()
+            except Exception:
+                pass
+        runtime.stop()
+
+
 def test_caps_ftp_runtime_rejects_invalid_credentials(tmp_path) -> None:
     storage_root = tmp_path / "caps"
     storage_root.mkdir()
@@ -183,6 +240,8 @@ def test_caps_ftp_runtime_rejects_invalid_credentials(tmp_path) -> None:
         port=0,
         username="nco_ftp",
         password="uploadcaps0731!",
+        admin_username="admin",
+        admin_password="nervergonnagiveyouup",
         storage_root=storage_root,
         passive_ports=tuple(range(42120, 42130)),
     )
@@ -194,6 +253,8 @@ def test_caps_ftp_runtime_rejects_invalid_credentials(tmp_path) -> None:
         ftp.connect("127.0.0.1", runtime.port, timeout=5)
         with pytest.raises(error_perm):
             ftp.login("nco_ftp", "wrong-password")
+        with pytest.raises(error_perm):
+            ftp.login("admin", "wrong-password")
     finally:
         try:
             ftp.close()
@@ -251,6 +312,8 @@ def test_caps_ftps_runtime_supports_explicit_tls_upload_only_permissions(tmp_pat
         port=0,
         username="nco_ftp",
         password="uploadcaps0731!",
+        admin_username="admin",
+        admin_password="nervergonnagiveyouup",
         storage_root=storage_root,
         passive_ports=tuple(range(42130, 42140)),
         tls_enabled=True,

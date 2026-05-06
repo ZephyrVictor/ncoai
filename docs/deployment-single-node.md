@@ -181,6 +181,8 @@ Recommended env values:
 - `CAPS_FTP_PORT=3221`
 - `CAPS_FTP_USERNAME=<fixed-account>`
 - `CAPS_FTP_PASSWORD=<fixed-password>`
+- `CAPS_FTP_ADMIN_USERNAME=<full-access-account>` optional
+- `CAPS_FTP_ADMIN_PASSWORD=<full-access-password>` optional
 - `CAPS_FTP_PASSIVE_PORT_START=41000`
 - `CAPS_FTP_PASSIVE_PORT_END=41099`
 - `CAPS_FTP_PUBLIC_HOST=<public-ip-or-domain>` when the host is behind NAT
@@ -194,10 +196,11 @@ Deployment checklist:
 
 1. set `CAPS_STORAGE_ROOT=/data/ncoai/caps`
 2. configure `CAPS_FTP_USERNAME` and `CAPS_FTP_PASSWORD`
-3. copy the TLS certificate and private key to a path readable by the host `chainlit` process
-4. open the FTPS control port `CAPS_FTP_PORT`
-5. open the passive range `CAPS_FTP_PASSIVE_PORT_START` to `CAPS_FTP_PASSIVE_PORT_END`
-6. point users at the fixed FTP account; the session root is chrooted to `/data/ncoai/caps/game-<GZCTF_FIXED_GAME_ID>`
+3. optionally configure `CAPS_FTP_ADMIN_USERNAME` and `CAPS_FTP_ADMIN_PASSWORD` for a full-access FTP account
+4. copy the TLS certificate and private key to a path readable by the host `chainlit` process
+5. open the FTPS control port `CAPS_FTP_PORT`
+6. open the passive range `CAPS_FTP_PASSIVE_PORT_START` to `CAPS_FTP_PASSIVE_PORT_END`
+7. point users at the FTP account they should use; both accounts are chrooted to `/data/ncoai/caps/game-<GZCTF_FIXED_GAME_ID>`, while the optional admin account has full FTP permissions inside that root
 
 Client guidance:
 

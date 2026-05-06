@@ -48,6 +48,10 @@ class LiteLLMFailoverSettings:
     backup_endpoint: VLLMEndpoint | None
     primary_request_timeout_seconds: float
     backup_request_timeout_seconds: float
+    lastdance_enabled: bool
+    lastdance_endpoint: VLLMEndpoint
+    lastdance_target_model: str
+    lastdance_request_timeout_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +102,9 @@ def build_litellm_failover_settings(
 ) -> LiteLLMFailoverSettings:
     values = dict(env or {})
     enabled = parse_env_bool(values.get("VLLM_FAILOVER_ENABLED"), default=False)
+    lastdance_enabled = parse_env_bool(values.get("thisisthelastdance"), default=False)
     backup_origin = str(values.get("VLLM_BACKUP_ORIGIN") or "").strip()
-    if enabled and not backup_origin:
+    if enabled and not backup_origin and not lastdance_enabled:
         raise ValueError("VLLM_FAILOVER_ENABLED=1 requires VLLM_BACKUP_ORIGIN")
 
     served_model_name = str(values.get("SERVED_MODEL_NAME") or "qwen35b").strip()
@@ -123,6 +128,13 @@ def build_litellm_failover_settings(
         backup_request_timeout_seconds=parse_env_float(
             values.get("VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS"),
             default=5.0,
+        ),
+        lastdance_enabled=lastdance_enabled,
+        lastdance_endpoint=build_vllm_endpoint("http://127.0.0.1:12234"),
+        lastdance_target_model="glm-4.5-air",
+        lastdance_request_timeout_seconds=parse_env_float(
+            values.get("CHAINLIT_OPENAI_TIMEOUT"),
+            default=300.0,
         ),
     )
 
@@ -191,42 +203,25 @@ def format_yaml_bool(value: bool) -> str:
 
 
 def _backup_model_block(settings: LiteLLMFailoverSettings) -> str:
-    if settings.backup_endpoint is None:
-        return ""
+    return ""
 
-    backup_model = f"openai/{settings.served_model_name}"
-    backup_timeout = format_timeout(settings.backup_request_timeout_seconds)
-    return (
-        "  - model_name: qwen35b_no_think_backup\n"
-        "    litellm_params:\n"
-        f"      model: {backup_model}\n"
-        f"      api_base: {settings.backup_endpoint.api_base}\n"
-        "      api_key: dummy\n"
-        f"      request_timeout: {backup_timeout}\n"
-        "      extra_body:\n"
-        "        chat_template_kwargs:\n"
-        "          enable_thinking: false\n"
-        "  - model_name: qwen35b_think_backup\n"
-        "    litellm_params:\n"
-        f"      model: {backup_model}\n"
-        f"      api_base: {settings.backup_endpoint.api_base}\n"
-        "      api_key: dummy\n"
-        f"      request_timeout: {backup_timeout}\n"
-        "      extra_body:\n"
-        "        chat_template_kwargs:\n"
-        "          enable_thinking: true\n"
-    )
+
+def _lastdance_model_block(settings: LiteLLMFailoverSettings) -> str:
+    return ""
 
 
 def _fallbacks_block(settings: LiteLLMFailoverSettings) -> str:
-    if settings.backup_endpoint is None:
+    return ""
+
+
+def _primary_extra_body_block(*, enable_thinking: bool, settings: LiteLLMFailoverSettings) -> str:
+    if settings.lastdance_enabled:
         return ""
+    enabled = "true" if enable_thinking else "false"
     return (
-        "  fallbacks:\n"
-        "    - qwen35b_no_think:\n"
-        "        - qwen35b_no_think_backup\n"
-        "    - qwen35b_think:\n"
-        "        - qwen35b_think_backup\n"
+        "      extra_body:\n"
+        "        chat_template_kwargs:\n"
+        f"          enable_thinking: {enabled}\n"
     )
 
 
@@ -235,19 +230,40 @@ def build_litellm_template_context(
     *,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    primary_model = f"openai/{settings.served_model_name}"
     values = dict(env or {})
+    primary_model = f"openai/{settings.served_model_name}"
+    primary_api_base = settings.lastdance_endpoint.api_base
+    primary_request_timeout_seconds = settings.lastdance_request_timeout_seconds
+    backup_model_block = _backup_model_block(settings)
+    fallbacks_block = _fallbacks_block(settings)
+
+    if settings.lastdance_enabled:
+        primary_model = f"openai/{settings.lastdance_target_model}"
+        primary_api_base = settings.lastdance_endpoint.api_base
+        primary_request_timeout_seconds = settings.lastdance_request_timeout_seconds
+        backup_model_block = ""
+        fallbacks_block = ""
+
     return {
         "primary_model": primary_model,
-        "primary_api_base": settings.primary_endpoint.api_base,
+        "primary_api_base": primary_api_base,
         "primary_request_timeout_seconds": format_timeout(
-            settings.primary_request_timeout_seconds
+            primary_request_timeout_seconds
         ),
         "litellm_set_verbose": format_yaml_bool(
             parse_env_bool(values.get("LITELLM_SET_VERBOSE"), default=True)
         ),
-        "backup_model_block": _backup_model_block(settings),
-        "fallbacks_block": _fallbacks_block(settings),
+        "primary_no_think_extra_body_block": _primary_extra_body_block(
+            enable_thinking=False,
+            settings=settings,
+        ),
+        "primary_think_extra_body_block": _primary_extra_body_block(
+            enable_thinking=True,
+            settings=settings,
+        ),
+        "backup_model_block": backup_model_block,
+        "lastdance_model_block": _lastdance_model_block(settings),
+        "fallbacks_block": fallbacks_block,
     }
 
 
@@ -271,16 +287,6 @@ def prepare_litellm_config(
     settings = build_litellm_failover_settings(env)
     warnings: list[str] = []
     backup_probe: dict[str, Any] | None = None
-    if settings.backup_endpoint is not None:
-        backup_probe = probe_vllm_endpoint(
-            settings.backup_endpoint,
-            timeout_seconds=probe_timeout_seconds,
-        )
-        if not backup_probe["healthy"]:
-            warnings.append(
-                "Backup vLLM endpoint is currently unreachable: "
-                f"{backup_probe['origin']} ({backup_probe['error'] or 'probe failed'})"
-            )
 
     return PreparedLiteLLMConfig(
         rendered_config=render_litellm_config(template_text, settings, env=env),

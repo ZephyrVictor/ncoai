@@ -1257,6 +1257,8 @@ def build_caps_ftp_runtime() -> CapsFTPServerRuntime:
         port=SETTINGS.caps.ftp_port,
         username=SETTINGS.caps.ftp_username,
         password=SETTINGS.caps.ftp_password,
+        admin_username=SETTINGS.caps.ftp_admin_username,
+        admin_password=SETTINGS.caps.ftp_admin_password,
         storage_root=storage_root,
         passive_ports=SETTINGS.caps.passive_ports,
         public_host=SETTINGS.caps.ftp_public_host,
