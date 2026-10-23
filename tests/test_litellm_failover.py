@@ -26,7 +26,8 @@ def test_prepare_litellm_config_without_backup_keeps_primary_only() -> None:
 
     assert "qwen35b_no_think_backup" not in prepared.rendered_config
     assert "fallbacks:" not in prepared.rendered_config
-    assert "set_verbose: true" in prepared.rendered_config
+    assert "set_verbose: false" in prepared.rendered_config
+    assert "request_timeout: 180" in prepared.rendered_config
     assert prepared.warnings == ()
 
 
@@ -108,8 +109,45 @@ def test_prepare_litellm_config_respects_verbose_env_override() -> None:
             "VLLM_PORT": "12233",
             "SERVED_MODEL_NAME": "qwen35b",
             "VLLM_FAILOVER_ENABLED": "0",
-            "LITELLM_SET_VERBOSE": "0",
+            "LITELLM_SET_VERBOSE": "1",
         },
     )
 
-    assert "set_verbose: false" in prepared.rendered_config
+    assert "set_verbose: true" in prepared.rendered_config
+
+
+def test_custom_model_alias_without_thinking_renders_one_model() -> None:
+    prepared = vllm_failover.prepare_litellm_config(
+        TEMPLATE_TEXT,
+        env={
+            "SERVED_MODEL_NAME": "qwen-deployment",
+            "CHAINLIT_DEFAULT_MODEL": "qwen-chat",
+            "CHAINLIT_ENABLE_THINKING": "0",
+        },
+    )
+
+    assert 'model_name: "qwen-chat"' in prepared.rendered_config
+    assert 'model: "openai/qwen-deployment"' in prepared.rendered_config
+    assert "qwen35b_think" not in prepared.rendered_config
+    assert "enable_thinking" not in prepared.rendered_config
+
+
+def test_custom_aliases_render_matching_fallbacks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        vllm_failover,
+        "probe_vllm_endpoint",
+        lambda endpoint, timeout_seconds=3.0: {"healthy": True},
+    )
+    prepared = vllm_failover.prepare_litellm_config(
+        TEMPLATE_TEXT,
+        env={
+            "VLLM_FAILOVER_ENABLED": "1",
+            "VLLM_BACKUP_ORIGIN": "backup.example.com:12233",
+            "CHAINLIT_DEFAULT_MODEL": "qwen-chat",
+            "CHAINLIT_THINKING_MODEL": "qwen-think",
+        },
+    )
+    assert 'model_name: "qwen-chat_backup"' in prepared.rendered_config
+    assert 'model_name: "qwen-think_backup"' in prepared.rendered_config
+    assert '"qwen-chat":' in prepared.rendered_config
+    assert '"qwen-think":' in prepared.rendered_config

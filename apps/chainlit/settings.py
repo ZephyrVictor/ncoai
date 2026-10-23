@@ -196,7 +196,7 @@ def load_settings() -> AppSettings:
         "CHAINLIT_WORKER_ID",
         f"chainlit-{worker_index}",
     ).strip() or f"chainlit-{worker_index}"
-    max_num_seqs = max(int(os.getenv("MAX_NUM_SEQS", "128")), 1)
+    max_num_seqs = max(int(os.getenv("MAX_NUM_SEQS", "32")), 1)
     default_global_admission_limit = max(int(max_num_seqs * 0.8), 1)
     return AppSettings(
         database=DatabaseSettings(
@@ -255,7 +255,7 @@ def load_settings() -> AppSettings:
                 float(
                     os.getenv(
                         "CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS",
-                        os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "8"),
+                        os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "120"),
                     )
                 ),
                 0.1,
@@ -301,7 +301,7 @@ def load_settings() -> AppSettings:
                 worker_count,
             ),
             queue_timeout_seconds=max(
-                float(os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "8")),
+                float(os.getenv("CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS", "120")),
                 0.1,
             ),
         ),

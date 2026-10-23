@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from string import Template
@@ -44,6 +45,9 @@ class VLLMEndpoint:
 class LiteLLMFailoverSettings:
     enabled: bool
     served_model_name: str
+    default_model_alias: str
+    thinking_model_alias: str
+    thinking_enabled: bool
     primary_endpoint: VLLMEndpoint
     backup_endpoint: VLLMEndpoint | None
     primary_request_timeout_seconds: float
@@ -106,9 +110,18 @@ def build_litellm_failover_settings(
     if not served_model_name:
         served_model_name = "qwen35b"
 
+    default_alias = str(values.get("CHAINLIT_DEFAULT_MODEL") or "qwen35b_no_think").strip()
+    thinking_alias = str(values.get("CHAINLIT_THINKING_MODEL") or "qwen35b_think").strip()
+    thinking_enabled = parse_env_bool(values.get("CHAINLIT_ENABLE_THINKING"), default=True)
+    if thinking_enabled and default_alias == thinking_alias:
+        raise ValueError("CHAINLIT_DEFAULT_MODEL and CHAINLIT_THINKING_MODEL must differ")
+
     return LiteLLMFailoverSettings(
         enabled=enabled,
         served_model_name=served_model_name,
+        default_model_alias=default_alias,
+        thinking_model_alias=thinking_alias,
+        thinking_enabled=thinking_enabled,
         primary_endpoint=build_vllm_endpoint(
             build_local_origin(
                 values.get("VLLM_HOST", "127.0.0.1"),
@@ -118,11 +131,11 @@ def build_litellm_failover_settings(
         backup_endpoint=build_vllm_endpoint(backup_origin) if enabled else None,
         primary_request_timeout_seconds=parse_env_float(
             values.get("VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS"),
-            default=2.5,
+            default=180.0,
         ),
         backup_request_timeout_seconds=parse_env_float(
             values.get("VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS"),
-            default=5.0,
+            default=180.0,
         ),
     )
 
@@ -190,44 +203,64 @@ def format_yaml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _model_block(
+    settings: LiteLLMFailoverSettings,
+    *,
+    api_base: str,
+    timeout_seconds: float,
+    suffix: str = "",
+) -> str:
+    def deployment(alias: str, enable_thinking: bool | None) -> str:
+        block = (
+            f"  - model_name: {json.dumps(alias + suffix)}\n"
+            "    litellm_params:\n"
+            f"      model: {json.dumps('openai/' + settings.served_model_name)}\n"
+            f"      api_base: {json.dumps(api_base)}\n"
+            "      api_key: dummy\n"
+            f"      request_timeout: {format_timeout(timeout_seconds)}\n"
+        )
+        if enable_thinking is not None:
+            block += (
+                "      extra_body:\n"
+                "        chat_template_kwargs:\n"
+                f"          enable_thinking: {format_yaml_bool(enable_thinking)}\n"
+            )
+        return block
+
+    block = deployment(
+        settings.default_model_alias,
+        False if settings.thinking_enabled else None,
+    )
+    if settings.thinking_enabled:
+        block += deployment(settings.thinking_model_alias, True)
+    return block
+
+
 def _backup_model_block(settings: LiteLLMFailoverSettings) -> str:
     if settings.backup_endpoint is None:
         return ""
-
-    backup_model = f"openai/{settings.served_model_name}"
-    backup_timeout = format_timeout(settings.backup_request_timeout_seconds)
-    return (
-        "  - model_name: qwen35b_no_think_backup\n"
-        "    litellm_params:\n"
-        f"      model: {backup_model}\n"
-        f"      api_base: {settings.backup_endpoint.api_base}\n"
-        "      api_key: dummy\n"
-        f"      request_timeout: {backup_timeout}\n"
-        "      extra_body:\n"
-        "        chat_template_kwargs:\n"
-        "          enable_thinking: false\n"
-        "  - model_name: qwen35b_think_backup\n"
-        "    litellm_params:\n"
-        f"      model: {backup_model}\n"
-        f"      api_base: {settings.backup_endpoint.api_base}\n"
-        "      api_key: dummy\n"
-        f"      request_timeout: {backup_timeout}\n"
-        "      extra_body:\n"
-        "        chat_template_kwargs:\n"
-        "          enable_thinking: true\n"
+    return _model_block(
+        settings,
+        api_base=settings.backup_endpoint.api_base,
+        timeout_seconds=settings.backup_request_timeout_seconds,
+        suffix="_backup",
     )
 
 
 def _fallbacks_block(settings: LiteLLMFailoverSettings) -> str:
     if settings.backup_endpoint is None:
         return ""
-    return (
+    block = (
         "  fallbacks:\n"
-        "    - qwen35b_no_think:\n"
-        "        - qwen35b_no_think_backup\n"
-        "    - qwen35b_think:\n"
-        "        - qwen35b_think_backup\n"
+        f"    - {json.dumps(settings.default_model_alias)}:\n"
+        f"        - {json.dumps(settings.default_model_alias + '_backup')}\n"
     )
+    if settings.thinking_enabled:
+        block += (
+            f"    - {json.dumps(settings.thinking_model_alias)}:\n"
+            f"        - {json.dumps(settings.thinking_model_alias + '_backup')}\n"
+        )
+    return block
 
 
 def build_litellm_template_context(
@@ -235,16 +268,15 @@ def build_litellm_template_context(
     *,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    primary_model = f"openai/{settings.served_model_name}"
     values = dict(env or {})
     return {
-        "primary_model": primary_model,
-        "primary_api_base": settings.primary_endpoint.api_base,
-        "primary_request_timeout_seconds": format_timeout(
-            settings.primary_request_timeout_seconds
+        "primary_model_block": _model_block(
+            settings,
+            api_base=settings.primary_endpoint.api_base,
+            timeout_seconds=settings.primary_request_timeout_seconds,
         ),
         "litellm_set_verbose": format_yaml_bool(
-            parse_env_bool(values.get("LITELLM_SET_VERBOSE"), default=True)
+            parse_env_bool(values.get("LITELLM_SET_VERBOSE"), default=False)
         ),
         "backup_model_block": _backup_model_block(settings),
         "fallbacks_block": _fallbacks_block(settings),

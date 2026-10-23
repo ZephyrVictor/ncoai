@@ -63,7 +63,7 @@ SERVICES: dict[str, ServiceDefinition] = {
     ),
     "vllm": ServiceDefinition(
         name="vllm",
-        script_relpath="scripts/vllm/start-qwen35b.sh",
+        script_relpath="scripts/vllm/start-local.sh",
         final_markers=("vllm.entrypoints.openai.api_server",),
         readiness_timeout_seconds=900.0,
     ),
@@ -259,12 +259,17 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def normalize_services(services: list[str] | None, order: tuple[str, ...]) -> list[str]:
     if services:
-        invalid = [service for service in services if not is_known_service_name(service)]
+        expanded = [
+            name
+            for service in services
+            for name in (order if service == "apps" else (service,))
+        ]
+        invalid = [service for service in expanded if not is_known_service_name(service)]
         if invalid:
             raise SystemExit(
                 f"[ERROR] Unknown service(s): {', '.join(invalid)}. Choices: {', '.join(SERVICE_NAMES)}"
             )
-        return services
+        return list(dict.fromkeys(expanded))
     return [name for name in order if name in SERVICES]
 
 
@@ -1028,6 +1033,20 @@ def preflight_service_checks(services: list[str]) -> int:
     return 0
 
 
+def warmup_vllm(env: dict[str, str] | None = None) -> int:
+    values = env if env is not None else load_env("host")
+    if values.get("VLLM_WARMUP_ENABLED", "1").strip().lower() in {"0", "false", "no", "off"}:
+        print("[INFO] vLLM warmup disabled by VLLM_WARMUP_ENABLED=0")
+        return 0
+    print("[INFO] Waiting for vLLM model and warming shared prefixes", flush=True)
+    return subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "vllm" / "warmup.py")],
+        cwd=ROOT,
+        env=values,
+        check=False,
+    ).returncode
+
+
 def start(services: list[str] | None = None) -> int:
     ensure_runtime_dirs()
     selected = normalize_services(services, DEFAULT_START_ORDER)
@@ -1038,10 +1057,19 @@ def start(services: list[str] | None = None) -> int:
             return 1
         if preflight_service_checks(selected) != 0:
             return 1
+    vllm_warmed = False
     for service in selected:
+        if service != "vllm" and runtime_service_name(service) in {"litellm", "chainlit"} and not vllm_warmed:
+            if warmup_vllm() != 0:
+                return 1
+            vllm_warmed = True
         exit_code = max(exit_code, start_service(service))
         if exit_code != 0:
             break
+        if service == "vllm" and not vllm_warmed:
+            if warmup_vllm() != 0:
+                return 1
+            vllm_warmed = True
     if exit_code == 0:
         print(f"[INFO] Attach with: tmux attach -t {TMUX_SESSION}")
     return exit_code
@@ -1117,6 +1145,7 @@ def parse_args() -> argparse.Namespace:
 
     sub.add_parser("attach", help="Attach to the tmux service session")
     sub.add_parser("doctor", help="Run deployment prerequisite checks")
+    sub.add_parser("warmup", help="Wait for and warm the configured vLLM model")
 
     p_record = sub.add_parser("_record-start", help=argparse.SUPPRESS)
     p_record.add_argument("service")
@@ -1149,6 +1178,8 @@ def main() -> int:
         return attach()
     if args.cmd == "doctor":
         return doctor()
+    if args.cmd == "warmup":
+        return warmup_vllm()
     if args.cmd == "_record-start":
         record_start(
             args.service,

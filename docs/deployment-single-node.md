@@ -93,6 +93,69 @@ See `docs/server-migration-init.md` for the full migration checklist, including 
 - `python3 devctl.py doctor`
   - prerequisite and health diagnostics
 
+## Four-GPU Inference Profile
+
+For the four RTX A6000 host, run one vLLM process with `TP_SIZE=4` and
+`CUDA_VISIBLE_DEVICES=0,1,2,3`. Set `MODEL_PATH` to the actual checkpoint
+directory and `SERVED_MODEL_NAME` to the name exposed by vLLM. The checkpoint
+name has not been fixed in this repository. Set `CHAINLIT_DEFAULT_MODEL` to the
+LiteLLM alias used by the UI. Set `CHAINLIT_ENABLE_THINKING=0` if the selected
+checkpoint does not support the `enable_thinking` chat template option.
+
+The local and remote launchers use these starting values when the deployment
+environment does not override them:
+
+| Variable | Starting value | Purpose |
+| --- | ---: | --- |
+| `TP_SIZE` | 4 | One model across four GPUs |
+| `ENABLE_PREFIX_CACHING` | 1 | Reuse identical prompt blocks within the running vLLM process |
+| `MAX_MODEL_LEN` | 2048 | Per-request context limit |
+| `MAX_NUM_SEQS` | 32 | Active vLLM sequence limit; excess work queues upstream |
+| `MAX_NUM_BATCHED_TOKENS` | 8192 | Prefill scheduling budget |
+| `GPU_MEMORY_UTILIZATION` | 0.90 | GPU memory reservation target |
+| `ENFORCE_EAGER` | 0 | Allow CUDA graph capture when supported |
+| `ENABLE_FP8_KV` | 0 | Keep the default KV cache dtype until quality and memory are measured |
+
+Prefix caching is an in-memory vLLM cache. It is cleared on restart and only
+helps when tokenized prompt blocks match, such as the shared system prompt or
+repeated context. It is not a response cache. Check that the production system
+prompt is stable across requests.
+
+`python3 devctl.py up apps` waits for vLLM `/health` and `/v1/models`, checks
+`SERVED_MODEL_NAME`, and sends four short, medium, and long chat requests before
+starting LiteLLM. The final request repeats the medium prompt to exercise
+prefix reuse. This also runs when `up vllm` finds an existing process or when
+only downstream services are selected. To rerun it manually:
+
+```bash
+python3 devctl.py warmup
+```
+
+The warmup uses `CHAINLIT_SYSTEM_PROMPT` and calls vLLM directly, so it does
+not consume user quota. Tune `VLLM_WARMUP_READY_TIMEOUT_SECONDS` (default 900)
+and `VLLM_WARMUP_REQUEST_TIMEOUT_SECONDS` (default 120) for slow loading or
+generation. A failed warmup returns a nonzero status and stops `devctl up`
+before downstream startup. `VLLM_WARMUP_ENABLED=0` disables this gate for
+rollback. Restarting vLLM clears the cache; run warmup again after restart.
+
+LiteLLM defaults to a 180-second vLLM request timeout through
+`VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS` (and
+`VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS` when failover is configured). Chainlit's
+admission and LiteLLM queue waits default to 120 seconds, adjustable with
+`CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS` and
+`CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS`. `LITELLM_SET_VERBOSE` defaults to 0
+to avoid per-request debug logging. These are timeouts, not a throughput
+guarantee. With `MAX_NUM_SEQS=32`, the default global admission limit is 25
+active generations; other users can remain connected or queue for a slot.
+
+Before promising 200 simultaneous prompts, load test the actual checkpoint,
+prompt lengths, output lengths, and arrival rate. Watch vLLM `/metrics` for
+running and waiting requests, KV cache occupancy and prefix cache hit rate,
+along with time to first token, tokens per second, queue wait and GPU memory.
+Raise `MAX_NUM_SEQS` and `MAX_NUM_BATCHED_TOKENS` gradually only while latency,
+memory and error rate remain acceptable. For rollback, restore the previous
+environment values and restart vLLM; the process must warm its cache again.
+
 Host service startup is strict:
 
 - `chainlit` and `admin` fail fast if `DATABASE_URL` / `REDIS_URL` are missing

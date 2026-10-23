@@ -1,23 +1,5 @@
 model_list:
-  - model_name: qwen35b_no_think
-    litellm_params:
-      model: ${primary_model}
-      api_base: ${primary_api_base}
-      api_key: dummy
-      request_timeout: ${primary_request_timeout_seconds}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-  - model_name: qwen35b_think
-    litellm_params:
-      model: ${primary_model}
-      api_base: ${primary_api_base}
-      api_key: dummy
-      request_timeout: ${primary_request_timeout_seconds}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: true
-${backup_model_block}
+${primary_model_block}${backup_model_block}
 
 litellm_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

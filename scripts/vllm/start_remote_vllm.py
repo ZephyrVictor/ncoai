@@ -42,25 +42,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Start an OpenAI-compatible vLLM server with the same defaults as the local node."
     )
-    parser.add_argument("--model-path", default=os.getenv("MODEL_PATH", "/home/ncoai/workspace/llmchat/ncoai/models/Qwen3.5-35B-A3B"))
-    parser.add_argument("--served-model-name", default=os.getenv("SERVED_MODEL_NAME", "qwen35b"))
+    parser.add_argument("--model-path", default=os.getenv("MODEL_PATH"))
+    parser.add_argument("--served-model-name", default=os.getenv("SERVED_MODEL_NAME"))
     parser.add_argument("--host", default=os.getenv("VLLM_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("VLLM_PORT", "12233")))
     parser.add_argument("--python-executable", default=os.getenv("VLLM_PYTHON", "python"))
     parser.add_argument("--cuda-visible-devices", default=os.getenv("CUDA_VISIBLE_DEVICES", "0,1,2,3"))
     parser.add_argument("--tensor-parallel-size", type=int, default=int(os.getenv("TP_SIZE", "4")))
     parser.add_argument("--dtype", default=os.getenv("DTYPE", "bfloat16"))
-    parser.add_argument("--gpu-memory-utilization", type=float, default=float(os.getenv("GPU_MEMORY_UTILIZATION", "0.92")))
-    parser.add_argument("--max-model-len", type=int, default=int(os.getenv("MAX_MODEL_LEN", "1024")))
-    parser.add_argument("--max-num-seqs", type=int, default=int(os.getenv("MAX_NUM_SEQS", "140")))
-    parser.add_argument("--max-num-batched-tokens", type=int, default=int(os.getenv("MAX_NUM_BATCHED_TOKENS", "98304")))
+    parser.add_argument("--gpu-memory-utilization", type=float, default=float(os.getenv("GPU_MEMORY_UTILIZATION", "0.90")))
+    parser.add_argument("--max-model-len", type=int, default=int(os.getenv("MAX_MODEL_LEN", "2048")))
+    parser.add_argument("--max-num-seqs", type=int, default=int(os.getenv("MAX_NUM_SEQS", "32")))
+    parser.add_argument("--max-num-batched-tokens", type=int, default=int(os.getenv("MAX_NUM_BATCHED_TOKENS", "8192")))
     parser.add_argument("--enable-prefix-caching", action="store_true", default=env_flag("ENABLE_PREFIX_CACHING", True))
     parser.add_argument("--disable-prefix-caching", action="store_false", dest="enable_prefix_caching")
     parser.add_argument("--enable-fp8-kv", action="store_true", default=env_flag("ENABLE_FP8_KV", False))
     parser.add_argument("--disable-fp8-kv", action="store_false", dest="enable_fp8_kv")
-    parser.add_argument("--language-model-only", action="store_true", default=env_flag("LANGUAGE_MODEL_ONLY", True))
+    parser.add_argument("--language-model-only", action="store_true", default=env_flag("LANGUAGE_MODEL_ONLY", False))
     parser.add_argument("--disable-language-model-only", action="store_false", dest="language_model_only")
-    parser.add_argument("--enforce-eager", action="store_true", default=env_flag("ENFORCE_EAGER", True))
+    parser.add_argument("--enforce-eager", action="store_true", default=env_flag("ENFORCE_EAGER", False))
     parser.add_argument("--disable-enforce-eager", action="store_false", dest="enforce_eager")
     parser.add_argument("--dry-run", action="store_true", help="Print the resolved command and exit.")
     return parser
@@ -125,6 +125,8 @@ def build_command(config: LauncherConfig) -> list[str]:
 
 
 def validate_config(config: LauncherConfig) -> None:
+    if not config.model_path or not config.served_model_name:
+        raise SystemExit("[ERROR] MODEL_PATH and SERVED_MODEL_NAME are required.")
     model_path = Path(config.model_path)
     if not model_path.is_dir():
         raise SystemExit(f"[ERROR] MODEL_PATH does not exist: {model_path}")
@@ -152,6 +154,8 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     config = config_from_args(args)
+    if not config.model_path or not config.served_model_name:
+        parser.error("--model-path and --served-model-name are required (or set MODEL_PATH and SERVED_MODEL_NAME)")
     command = build_command(config)
 
     print("[INFO] Starting remote vLLM server with:")
