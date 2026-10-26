@@ -298,7 +298,25 @@ Recommended:
 ## Ops Entry Points
 
 - Admin summary: `/admin/ops`
+- Admin inspection: `/admin/services` (administrator login required)
 - Grafana dashboards: `/grafana/`
 - Host-only metrics:
   - `http://127.0.0.1:${ADMIN_APP_PORT}${ADMIN_APP_ROOT_PATH}/metrics`
   - `http://127.0.0.1:${CHAINLIT_PORT}${CHAINLIT_ROOT_PATH}/metrics`
+
+### Model availability checks
+
+The existing Admin process checks real generation through LiteLLM at startup and
+every two minutes after each round completes. It uses `CHAINLIT_LITELLM_BASE_URL`
+and `CHAINLIT_LITELLM_API_KEY` (falling back to `LITELLM_MASTER_KEY`), and the same
+`CHAINLIT_DEFAULT_MODEL`, `CHAINLIT_THINKING_MODEL`, and `CHAINLIT_ENABLE_THINKING`
+configuration as the chat UI. Each enabled alias receives a short request with
+at most 64 output tokens and a 60-second HTTP timeout. Nonempty answer or reasoning
+content counts as successful generation, including responses cut short by the token limit.
+
+The page refreshes every 60 seconds and reads the latest Redis snapshot without
+generating additional requests. Missing results, results older than six minutes,
+and unavailable Redis data display as unknown. Model failures are only shown on
+the page; they do not send notifications. The single Admin process owns the check
+loop; keep one Admin worker to avoid duplicate probes. These checks validate
+availability, not concurrent request capacity.

@@ -43,6 +43,15 @@ def sample_services_payload() -> dict[str, object]:
         "bucket_minutes": 10,
         "poll_interval_seconds": 60,
         "errors": [],
+        "model_checks": [
+            {
+                "id": "model-default",
+                "name": "模型普通模式",
+                "status": "up",
+                "detail": "生成请求成功",
+                "last_checked_at": "2026-04-18T00:00:00+00:00",
+            }
+        ],
         "services": [
             {
                 "id": "admin",
@@ -69,6 +78,7 @@ class FakeController:
     def __init__(self) -> None:
         self.start = AsyncMock()
         self.stop = AsyncMock()
+        self.load_model_checks = AsyncMock(return_value=sample_services_payload()["model_checks"])
 
 
 def build_client(monkeypatch) -> TestClient:
@@ -95,7 +105,8 @@ def test_services_page_renders_availability(monkeypatch) -> None:
     response = client.get("/admin/services")
 
     assert response.status_code == 200
-    assert "服务可用性" in response.text
+    assert "巡检" in response.text
+    assert "模型普通模式" in response.text
     assert "Admin" in response.text
 
 
@@ -107,9 +118,21 @@ def test_services_availability_api_returns_payload(monkeypatch) -> None:
         "load_services_availability",
         AsyncMock(return_value=sample_services_payload()),
     )
+    controller = FakeController()
+    controller.refresh_model_checks_now = AsyncMock()
+    monkeypatch.setattr(admin_app, "get_service_availability_controller", lambda: controller)
 
     response = client.get("/admin/api/services/availability")
 
     assert response.status_code == 200
     assert response.json()["bucket_minutes"] == 10
     assert response.json()["poll_interval_seconds"] == 60
+    assert response.json()["model_checks"][0]["status"] == "up"
+    controller.load_model_checks.assert_awaited_once()
+    controller.refresh_model_checks_now.assert_not_awaited()
+
+
+def test_services_page_and_api_require_admin(monkeypatch) -> None:
+    client = build_client(monkeypatch)
+    assert client.get("/admin/services", follow_redirects=False).status_code in {302, 303, 307}
+    assert client.get("/admin/api/services/availability").status_code == 401

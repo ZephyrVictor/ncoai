@@ -617,12 +617,14 @@ async def services_page(request: Request) -> HTMLResponse:
         prometheus_url=SETTINGS.monitoring_prometheus_url,
         settings=SETTINGS,
     )
+    availability["model_checks"] = await get_service_availability_controller().load_model_checks()
     return templates.TemplateResponse(
         "services.html",
         base_context(
             request,
-            page_title="NCO LLM CHAT Service Availability",
+            page_title="NCO LLM CHAT 巡检",
             services_availability=availability,
+            display_timezone=SETTINGS.display_timezone,
         ),
     )
 
@@ -944,6 +946,7 @@ async def services_availability_api(request: Request) -> JSONResponse:
         prometheus_url=SETTINGS.monitoring_prometheus_url,
         settings=SETTINGS,
     )
+    payload["model_checks"] = await get_service_availability_controller().load_model_checks()
     return JSONResponse(payload)
 
 

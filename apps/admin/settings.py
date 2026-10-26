@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ncoai_shared.vllm_failover import build_litellm_failover_settings
+
 
 def normalize_postgres_url(database_url: str) -> str:
     if database_url.startswith("postgresql+asyncpg://"):
@@ -65,9 +67,23 @@ class AdminSettings:
     vllm_redundancy_restart_max_attempts: int
     vllm_redundancy_restart_window_seconds: int
     vllm_redundancy_restart_command_timeout_seconds: float
+    litellm_base_url: str = "http://127.0.0.1:33455/v1"
+    litellm_api_key: str = ""
+    default_model_alias: str = "qwen35b_no_think"
+    thinking_model_alias: str = "qwen35b_think"
+    thinking_enabled: bool = True
 
 
 def load_settings() -> AdminSettings:
+    model_settings = build_litellm_failover_settings({
+        key: os.environ[key]
+        for key in (
+            "CHAINLIT_DEFAULT_MODEL",
+            "CHAINLIT_THINKING_MODEL",
+            "CHAINLIT_ENABLE_THINKING",
+        )
+        if key in os.environ
+    })
     database_url = os.getenv(
         "DATABASE_URL",
         "postgresql://ncoai:ncoai_dev@127.0.0.1:55432/ncoai_chat",
@@ -163,6 +179,16 @@ def load_settings() -> AdminSettings:
         vllm_redundancy_restart_command_timeout_seconds=float(
             os.getenv("ADMIN_VLLM_REDUNDANCY_RESTART_COMMAND_TIMEOUT_SECONDS", "180")
         ),
+        litellm_base_url=os.getenv(
+            "CHAINLIT_LITELLM_BASE_URL",
+            f"http://127.0.0.1:{os.getenv('LITELLM_PORT', '33455')}/v1",
+        ).rstrip("/"),
+        litellm_api_key=(
+            os.getenv("CHAINLIT_LITELLM_API_KEY") or os.getenv("LITELLM_MASTER_KEY") or ""
+        ).strip(),
+        default_model_alias=model_settings.default_model_alias,
+        thinking_model_alias=model_settings.thinking_model_alias,
+        thinking_enabled=model_settings.thinking_enabled,
     )
 
 

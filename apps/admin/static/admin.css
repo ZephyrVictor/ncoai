@@ -373,6 +373,21 @@ th, td {
   margin-bottom: 0;
 }
 
+.model-checks-list {
+  margin-bottom: 24px;
+}
+
+.model-check-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.model-check-row .muted {
+  margin-left: auto;
+}
+
 .service-row {
   display: grid;
   grid-template-columns: minmax(260px, 320px) 1fr;

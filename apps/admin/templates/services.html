@@ -4,8 +4,7 @@
 <section class="panel">
   <div class="panel-header">
     <div>
-      <h1>服务可用性</h1>
-      <p class="muted">按 10 分钟桶展示最近 24 小时可用率，自动每 60 秒刷新。</p>
+      <h1>巡检</h1>
     </div>
     <div class="actions">
       <a class="ghost" href="{{ root_path }}/ops">运维总览</a>
@@ -23,6 +22,24 @@
   {% endif %}
 </section>
 
+<section>
+  <h2>模型生成</h2>
+  <div id="model-checks-list" class="stack model-checks-list">
+    {% for check in services_availability.model_checks %}
+    <article class="panel service-panel" data-monitor-id="{{ check.id }}">
+      <div class="model-check-row">
+        <strong>{{ check.name }}</strong>
+        <span class="status-chip status-{{ check.status }}">
+          {% if check.status == "up" %}正常{% elif check.status == "down" %}异常{% else %}未知{% endif %}
+        </span>
+        <span class="muted">{{ check.detail }} · 最近检查：{{ check.last_checked_at | format_datetime }}</span>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<h2>基础服务</h2>
 <section id="services-list" class="stack">
   {% for service in services_availability.services %}
   <article class="panel service-panel" data-monitor-id="{{ service.id }}">
@@ -69,29 +86,66 @@
     timer: null,
     pollIntervalMs: ({{ services_availability.poll_interval_seconds | default(60) }} || 60) * 1000,
   };
+  const displayTimezone = {{ display_timezone | tojson }};
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[character]);
+  }
+
+  function safeStatus(value) {
+    return ['up', 'down', 'degraded', 'unknown'].includes(value) ? value : 'unknown';
+  }
+
+  function formatCheckedAt(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: displayTimezone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    }).format(date);
+  }
+
+  function renderModelCheck(check) {
+    const status = safeStatus(check.status);
+    const label = { up: '正常', down: '异常', unknown: '未知' }[status] || '未知';
+    return `
+      <article class="panel service-panel" data-monitor-id="${escapeHtml(check.id)}">
+        <div class="model-check-row">
+          <strong>${escapeHtml(check.name)}</strong>
+          <span class="status-chip status-${status}">${label}</span>
+          <span class="muted">${escapeHtml(check.detail)} · 最近检查：${escapeHtml(formatCheckedAt(check.last_checked_at))}</span>
+        </div>
+      </article>
+    `;
+  }
 
   function renderHistoryBars(historyBuckets) {
     return historyBuckets.map((bucket) => {
-      const title = `${bucket.start_at || '-'} - ${bucket.end_at || '-'}: ${bucket.status}`;
-      return `<span class="uptime-bar uptime-bar-${bucket.status}" title="${title}"></span>`;
+      const status = safeStatus(bucket.status);
+      const title = `${bucket.start_at || '-'} - ${bucket.end_at || '-'}: ${status}`;
+      return `<span class="uptime-bar uptime-bar-${status}" title="${escapeHtml(title)}"></span>`;
     }).join('');
   }
 
   function renderServicePanel(service) {
+    const status = safeStatus(service.status);
     const availability = service.availability_percent_24h == null
       ? '-'
       : `${Number(service.availability_percent_24h).toFixed(2)}%`;
     return `
-      <article class="panel service-panel" data-monitor-id="${service.id}">
+      <article class="panel service-panel" data-monitor-id="${escapeHtml(service.id)}">
         <div class="service-row">
           <div class="service-meta">
             <div class="service-title">
               <span class="availability-pill">${availability}</span>
-              <strong>${service.name}</strong>
-              <span class="status-chip status-${service.status}">${service.status}</span>
+              <strong>${escapeHtml(service.name)}</strong>
+              <span class="status-chip status-${status}">${status}</span>
             </div>
             <div class="muted service-detail">
-              ${service.detail} 最近检查：${service.last_checked_at || '-'}
+              ${escapeHtml(service.detail)} 最近检查：${escapeHtml(service.last_checked_at || '-')}
             </div>
           </div>
           <div class="service-history">
@@ -117,6 +171,10 @@
       const payload = await response.json();
       const generatedAt = document.getElementById('services-generated-at');
       if (generatedAt) generatedAt.textContent = payload.generated_at || '-';
+      const modelContainer = document.getElementById('model-checks-list');
+      if (modelContainer) {
+        modelContainer.innerHTML = (payload.model_checks || []).map(renderModelCheck).join('');
+      }
       const container = document.getElementById('services-list');
       if (container) {
         container.innerHTML = (payload.services || []).map(renderServicePanel).join('');

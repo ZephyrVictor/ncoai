@@ -17,10 +17,14 @@ from settings import AdminSettings
 WINDOW_HOURS = 24
 BUCKET_MINUTES = 10
 POLL_INTERVAL_SECONDS = 60
+MODEL_POLL_INTERVAL_SECONDS = 120
+MODEL_REQUEST_TIMEOUT_SECONDS = 60
+MODEL_STATE_TTL_SECONDS = 360
 BUCKET_COUNT = (WINDOW_HOURS * 60) // BUCKET_MINUTES
 FAILURE_STREAK_THRESHOLD = 2
 RECOVERY_STREAK_THRESHOLD = 2
 STATE_REDIS_KEY = "service-availability:state:global"
+MODEL_STATE_REDIS_KEY = "service-availability:model-checks:global"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +65,84 @@ def _request_json(url: str, *, timeout: int = 20) -> dict[str, Any]:
 
 async def fetch_json(url: str, *, timeout: int = 20) -> dict[str, Any]:
     return await asyncio.to_thread(_request_json, url, timeout=timeout)
+
+
+def model_check_definitions(settings: AdminSettings) -> list[tuple[str, str, str]]:
+    checks = [("model-default", "模型普通模式", settings.default_model_alias)]
+    if settings.thinking_enabled:
+        checks.append(("model-thinking", "模型思考模式", settings.thinking_model_alias))
+    return checks
+
+
+def _request_model_completion(url: str, *, api_key: str, model: str) -> None:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "请用一句话回复：你好。"}],
+        "max_tokens": 64,
+        "temperature": 0,
+        "stream": False,
+    }
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=MODEL_REQUEST_TIMEOUT_SECONDS) as response:
+            result = json.load(response)
+    except HTTPError as exc:
+        raise RuntimeError(f"LiteLLM 返回 HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise RuntimeError("LiteLLM 连接失败或请求超时") from exc
+    except (ValueError, OSError) as exc:
+        raise RuntimeError("LiteLLM 响应无效") from exc
+    except Exception as exc:
+        raise RuntimeError("LiteLLM 请求失败") from exc
+    choices = result.get("choices") if isinstance(result, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("LiteLLM 未返回生成结果")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict) or not any(
+        isinstance(message.get(field), str) and message[field].strip()
+        for field in ("content", "reasoning_content")
+    ):
+        raise RuntimeError("模型未生成有效内容")
+
+
+async def probe_model(
+    *, settings: AdminSettings, check_id: str, name: str, model: str
+) -> dict[str, Any]:
+    status = "up"
+    detail = "生成请求成功"
+    if not settings.litellm_api_key:
+        status = "unknown"
+        detail = "未配置 LiteLLM API Key"
+    else:
+        try:
+            await asyncio.to_thread(
+                _request_model_completion,
+                f"{settings.litellm_base_url}/chat/completions",
+                api_key=settings.litellm_api_key,
+                model=model,
+            )
+        except RuntimeError as exc:
+            status = "down"
+            detail = str(exc)
+        except Exception:
+            status = "down"
+            detail = "生成请求失败"
+    return {
+        "id": check_id,
+        "name": name,
+        "model": model,
+        "status": status,
+        "detail": detail,
+        "last_checked_at": serialize_datetime(utcnow()),
+    }
 
 
 async def query_prometheus(
@@ -398,21 +480,24 @@ class ServiceAvailabilityController:
         self.logger = logger
         self.secret_cipher = secret_cipher
         self._task: asyncio.Task[None] | None = None
+        self._model_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._task = asyncio.create_task(self._monitor_loop())
+        self._model_task = asyncio.create_task(self._model_monitor_loop())
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
+        for task in (self._task, self._model_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         self._task = None
+        self._model_task = None
 
     async def _monitor_loop(self) -> None:
         while True:
@@ -421,6 +506,73 @@ class ServiceAvailabilityController:
             except Exception as exc:
                 self.logger.warning("Service availability refresh failed: %s", exc)
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+    async def _model_monitor_loop(self) -> None:
+        while True:
+            try:
+                await self.refresh_model_checks_now()
+            except Exception as exc:
+                self.logger.warning("Model availability refresh failed: %s", exc)
+            await asyncio.sleep(MODEL_POLL_INTERVAL_SECONDS)
+
+    async def refresh_model_checks_now(self) -> list[dict[str, Any]]:
+        checks = await asyncio.gather(
+            *(
+                probe_model(settings=self.settings, check_id=check_id, name=name, model=model)
+                for check_id, name, model in model_check_definitions(self.settings)
+            )
+        )
+        await self.redis.set(
+            MODEL_STATE_REDIS_KEY,
+            json.dumps({item["id"]: item for item in checks}, ensure_ascii=False),
+            ex=MODEL_STATE_TTL_SECONDS,
+        )
+        return checks
+
+    async def load_model_checks(self) -> list[dict[str, Any]]:
+        try:
+            raw = await self.redis.get(MODEL_STATE_REDIS_KEY)
+            cached = json.loads(raw) if raw else {}
+        except Exception as exc:
+            self.logger.warning("Model availability cache read failed: %s", exc)
+            cached = {}
+        if not isinstance(cached, dict):
+            cached = {}
+        now = utcnow()
+        result = []
+        for check_id, name, model in model_check_definitions(self.settings):
+            item = cached.get(check_id)
+            valid = False
+            if (
+                isinstance(item, dict)
+                and item.get("model") == model
+                and item.get("status") in {"up", "down", "unknown"}
+            ):
+                try:
+                    checked_at = datetime.fromisoformat(item["last_checked_at"])
+                    age = (now - checked_at).total_seconds()
+                    valid = checked_at.tzinfo is not None and 0 <= age <= MODEL_STATE_TTL_SECONDS
+                except (KeyError, TypeError, ValueError):
+                    pass
+            if valid and self.settings.litellm_api_key:
+                result.append({
+                    "id": check_id,
+                    "name": name,
+                    "model": model,
+                    "status": item["status"],
+                    "detail": str(item.get("detail") or "")[:160],
+                    "last_checked_at": item["last_checked_at"],
+                })
+            else:
+                result.append({
+                    "id": check_id,
+                    "name": name,
+                    "model": model,
+                    "status": "unknown",
+                    "detail": "未配置 LiteLLM API Key" if not self.settings.litellm_api_key else "等待巡检结果",
+                    "last_checked_at": None,
+                })
+        return result
 
     async def load_state(self) -> dict[str, Any]:
         raw = await self.redis.get(STATE_REDIS_KEY)
