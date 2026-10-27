@@ -21,6 +21,7 @@ require_env_vars \
 
 source "$ROOT_DIR/.venv-litellm/bin/activate"
 export LITELLM_LOCAL_MODEL_COST_MAP="${LITELLM_LOCAL_MODEL_COST_MAP:-True}"
+export DATABASE_URL="$LITELLM_DATABASE_URL"
 
 if ! python -c "import litellm" >/dev/null 2>&1; then
   echo "[ERROR] LiteLLM runtime dependency is missing in .venv-litellm" >&2

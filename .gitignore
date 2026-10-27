@@ -32,6 +32,7 @@ htmlcov/
 .venv-litellm/
 venv/
 env/
+!infra/env/
 
 # Node / frontend
 node_modules/
@@ -71,3 +72,4 @@ middleware/litellm/
 !.env.example
 !.env.sample
 !.env.template
+infra/env/*.env

@@ -110,7 +110,11 @@ echo "[INFO] Installing LiteLLM into $LITELLM_VENV_DIR"
 uv pip install --python "$LITELLM_VENV_DIR/bin/python" --upgrade \
   "${UV_PIP_EXTRA_ARGS_ARR[@]}" \
   "psycopg[binary]" \
-  "litellm[proxy]>=1.106.4,<2.0.0"
+  "litellm[extra_proxy]>=1.106.4,<2.0.0"
+
+LITELLM_PRISMA_SCHEMA="$("$LITELLM_VENV_DIR/bin/python" -c 'from importlib.resources import files; print(files("litellm_proxy_extras").joinpath("schema.prisma"))')"
+DATABASE_URL="$LITELLM_DATABASE_URL" PATH="$LITELLM_VENV_DIR/bin:$PATH" \
+  "$LITELLM_VENV_DIR/bin/prisma" generate --schema "$LITELLM_PRISMA_SCHEMA"
 
 if [[ "$INSTALL_PLAYWRIGHT_BROWSERS" == "1" ]]; then
   echo "[INFO] Installing Playwright Chromium browser"

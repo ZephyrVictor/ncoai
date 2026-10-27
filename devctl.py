@@ -1050,6 +1050,8 @@ def warmup_vllm(env: dict[str, str] | None = None) -> int:
 def start(services: list[str] | None = None) -> int:
     ensure_runtime_dirs()
     selected = normalize_services(services, DEFAULT_START_ORDER)
+    if (not services or "apps" in services) and load_env("host").get("CAPS_ENABLED") != "1":
+        selected = [service for service in selected if service != "caps-ftp"]
     exit_code = 0
     if selected:
         if not has_tmux():

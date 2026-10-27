@@ -15,6 +15,12 @@ discovery.relabel "docker" {
 
   rule {
     source_labels = ["container"]
+    regex         = "ncoai-.*"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["container"]
     regex         = "ncoai-(.*)"
     replacement   = "$1"
     target_label  = "service"

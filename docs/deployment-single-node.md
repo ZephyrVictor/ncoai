@@ -14,7 +14,7 @@
   - `Prometheus`
   - `Grafana`
   - `Loki`
-  - `Promtail`
+  - `Alloy`
   - exporters
 
 This layout keeps GPU inference on the host while containerizing stateful infra and edge services.

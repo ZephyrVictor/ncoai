@@ -117,9 +117,13 @@ async def main() -> int:
         json.dumps(
             {
                 "ok": True,
-                "database_url": database_url,
-                "litellm_database_url": litellm_database_url,
-                "redis_url": redis_url,
+                "database": make_url(database_url).database,
+                "litellm_database": (
+                    make_url(litellm_database_url).database
+                    if litellm_database_url
+                    else None
+                ),
+                "redis_configured": bool(redis_url),
             },
             ensure_ascii=False,
         )

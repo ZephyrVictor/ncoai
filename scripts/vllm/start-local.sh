@@ -22,6 +22,13 @@ if [[ -z "${VLLM_PYTHON:-}" && -x "$ROOT_DIR/.venv/bin/python" ]]; then
 fi
 VLLM_PYTHON="${VLLM_PYTHON:-python}"
 
+if [[ -x "$HOME/.local/bin/ninja" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# FlashInfer's sampler JIT requires a newer nvcc than some supported hosts provide.
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 TP_SIZE="${TP_SIZE:-4}"
 
