@@ -54,7 +54,9 @@ REDIS = Redis.from_url(REDIS_URL, decode_responses=True)
 FOOTER_RE = re.compile(r"当前对话\s+([\d,]+)\s*/\s*([\d,]+)\s*tok")
 TOKEN_USAGE_RE = re.compile(r"本次\s+([\d,]+)\s+tok\s+·\s+会话\s+([\d,]+)\s*/\s*([\d,]+)")
 BLOCKED_RE = re.compile(
-    r"当前对话额度已用尽|用户总额度已用尽|当前不在配额生效时间内|当前没有可用配额配置"
+    r"当前对话额度已用尽|当前对话剩余额度不足以容纳下一轮上下文|"
+    r"用户总额度已用尽|用户总额度剩余不足以发起下一次请求|"
+    r"当前不在配额生效时间内|当前没有可用配额配置"
 )
 
 
@@ -312,6 +314,22 @@ def wait_for_send_result(
     while time.time() < deadline:
         quota_payload = quota_fetch(page)
         quota = (quota_payload.get("body") or {}).get("quota") or {}
+        # In-flight reservations can temporarily exhaust the available quota.
+        # Wait for settlement and the end of streaming before checking a block.
+        if int(quota.get("reserved_tokens") or 0) > 0 or page.locator(
+            "#stop-button"
+        ).is_visible():
+            time.sleep(1)
+            continue
+        footer_text = latest_footer_text(page)
+        thread_used = footer_used_tokens(page)
+        if thread_used > previous_thread_used:
+            return {
+                "blocked": False,
+                "footer_text": footer_text,
+                "token_text": latest_token_usage_text(page),
+                "thread_used_tokens": thread_used,
+            }
         blocked = blocked_text(page)
         if blocked or quota.get("status") in {"blocked", "window_closed", "missing_policy"}:
             return {
@@ -323,15 +341,6 @@ def wait_for_send_result(
                 "footer_text": latest_footer_text(page),
                 "token_text": latest_token_usage_text(page),
                 "thread_used_tokens": footer_used_tokens(page),
-            }
-        footer_text = latest_footer_text(page)
-        thread_used = footer_used_tokens(page)
-        if thread_used > previous_thread_used:
-            return {
-                "blocked": False,
-                "footer_text": footer_text,
-                "token_text": latest_token_usage_text(page),
-                "thread_used_tokens": thread_used,
             }
         time.sleep(1)
     raise TimeoutError("chat response did not settle in time")
@@ -373,9 +382,13 @@ def send_prompt_and_capture(
     prompt: str,
     previous_thread_used: int,
 ) -> dict[str, Any]:
-    page.locator("#chat-input").fill(prompt)
-    page.locator("#chat-submit").click()
-    return wait_for_send_result(page, previous_thread_used=previous_thread_used)
+    submitted = not page.locator("#chat-input").is_disabled()
+    if submitted:
+        page.locator("#chat-input").fill(prompt)
+        page.locator("#chat-submit").click()
+    result = wait_for_send_result(page, previous_thread_used=previous_thread_used)
+    result["submitted"] = submitted
+    return result
 
 
 def delete_thread_via_api(page, thread_id: str) -> dict[str, Any]:
