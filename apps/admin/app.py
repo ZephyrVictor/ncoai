@@ -528,6 +528,7 @@ async def login_page(request: Request) -> HTMLResponse:
     if admin_authenticated(request):
         return RedirectResponse(f"{SETTINGS.root_path}/users", status_code=302)
     return templates.TemplateResponse(
+        request,
         "login.html",
         base_context(request, page_title="NCO LLM CHAT Login"),
     )
@@ -551,6 +552,7 @@ async def users_page(request: Request, edit: str | None = None) -> HTMLResponse:
         except KeyError:
             edit_usage = None
     return templates.TemplateResponse(
+        request,
         "users.html",
         base_context(
             request,
@@ -585,6 +587,7 @@ async def quota_policies_page(request: Request) -> HTMLResponse:
             and (end is None or end >= now)
         )
     return templates.TemplateResponse(
+        request,
         "quota_policies.html",
         base_context(
             request,
@@ -600,6 +603,7 @@ async def team_token_auth_page(request: Request) -> HTMLResponse:
         return redirect_to_login()
     config = await get_team_token_auth_config()
     return templates.TemplateResponse(
+        request,
         "team_token_auth.html",
         base_context(
             request,
@@ -619,6 +623,7 @@ async def services_page(request: Request) -> HTMLResponse:
     )
     availability["model_checks"] = await get_service_availability_controller().load_model_checks()
     return templates.TemplateResponse(
+        request,
         "services.html",
         base_context(
             request,
@@ -635,6 +640,7 @@ async def monitoring_notifications_page(request: Request) -> HTMLResponse:
         return redirect_to_login()
     channels = await REPOSITORY.list_monitor_notification_channels()
     return templates.TemplateResponse(
+        request,
         "monitoring_notifications.html",
         base_context(
             request,
@@ -663,6 +669,7 @@ async def ops_page(request: Request) -> HTMLResponse:
         limit=30,
     )
     return templates.TemplateResponse(
+        request,
         "ops.html",
         base_context(
             request,
@@ -682,6 +689,7 @@ async def vllm_redundancy_page(request: Request) -> HTMLResponse:
 
     payload = await get_vllm_redundancy_controller().load_payload()
     return templates.TemplateResponse(
+        request,
         "vllm_redundancy.html",
         base_context(
             request,

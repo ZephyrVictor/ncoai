@@ -20,9 +20,10 @@
 
 ## Automatically managed tooling
 
-1. Node `20.x` is installed locally under `.local/toolchain/`
+1. Node `24.x` is installed locally under `.local/toolchain/`
 2. `pnpm 9` is enabled through `corepack`
 3. Chainlit backend runtime is installed into `.venv`
+4. LiteLLM proxy runtime is installed into `.venv-litellm` so its MCP dependency can differ from Chainlit's
 
 ## Python packages required for MVP validation
 

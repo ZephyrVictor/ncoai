@@ -1,10 +1,6 @@
-# Middleware Source Repositories
+# Middleware
 
-This folder hosts middleware source trees that are patched locally for the MVP runtime.
-
-## Current contents
-
-1. `litellm`
+LiteLLM is installed from PyPI into the project's `.venv-litellm` by `scripts/deploy/init-host.sh`.
 
 LiteLLM is used as the single OpenAI-compatible gateway between Chainlit and vLLM. It is responsible for:
 

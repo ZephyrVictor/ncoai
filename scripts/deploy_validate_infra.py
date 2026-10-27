@@ -11,7 +11,7 @@ CONTAINERS = {
     "ncoai-prometheus": True,
     "ncoai-grafana": True,
     "ncoai-loki": True,
-    "ncoai-promtail": True,
+    "ncoai-alloy": True,
     "ncoai-node-exporter": False,
     "ncoai-postgres-exporter": False,
     "ncoai-redis-exporter": False,

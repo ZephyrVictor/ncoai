@@ -1,5 +1,6 @@
 """Build script gets called on uv/pip build."""
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -29,7 +30,7 @@ def run_subprocess(cmd: list[str], cwd: pathlib.Path) -> None:
 
 def pnpm_install(project_root: pathlib.Path, pnpm_path: str):
     run_subprocess(
-        [pnpm_path, "install", "--no-frozen-lockfile", "--lockfile=false"],
+        [pnpm_path, "install", "--frozen-lockfile"],
         project_root,
     )
 
@@ -73,6 +74,9 @@ def copy_copilot(project_root: pathlib.Path):
 def build():
     """Main build function with proper error handling"""
 
+    if os.environ.get("BUILD_CHAINLIT_FRONTEND") == "0":
+        return
+
     print(
         "\n-- Building frontend, this might take a while!\n\n"
         "   If you don't need to build the frontend and just want dependencies installed, use:\n"
@@ -92,6 +96,8 @@ def build():
         if not pnpm:
             raise BuildError("pnpm not found!")
 
+        os.environ.setdefault("CYPRESS_INSTALL_BINARY", "0")
+        os.environ.setdefault("CI", "true")
         pnpm_install(project_root, pnpm)
         pnpm_buildui(project_root, pnpm)
         copy_frontend(project_root)
@@ -111,3 +117,7 @@ def build():
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, _, __):
         build()
+
+
+if __name__ == "__main__":
+    build()

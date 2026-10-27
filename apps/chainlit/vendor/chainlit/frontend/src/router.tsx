@@ -1,5 +1,5 @@
 import getRouterBasename from '@/lib/router';
-import { Navigate, createBrowserRouter } from 'react-router-dom';
+import { Navigate, createBrowserRouter, type RouterProviderProps } from 'react-router-dom';
 
 import AuthCallback from 'pages/AuthCallback';
 import Element from 'pages/Element';
@@ -8,7 +8,7 @@ import Home from 'pages/Home';
 import Login from 'pages/Login';
 import Thread from 'pages/Thread';
 
-export const router = createBrowserRouter(
+export const router: RouterProviderProps['router'] = createBrowserRouter(
   [
     {
       path: '/',

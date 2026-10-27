@@ -16,7 +16,7 @@ The current MVP does not include agent workflows, RAG, MCP, or the old control-p
 4. NVIDIA driver and CUDA runtime for `vLLM`
 5. Docker for optional edge services such as PostgreSQL and nginx
 
-You do not need a system `node` or `pnpm`. `scripts/chainlit/start-local.sh` installs a local Node 20 toolchain under `.local/toolchain/`.
+You do not need a system `node` or `pnpm`. `scripts/deploy/init-host.sh` installs a local Node 24 toolchain under `.local/toolchain/` when needed.
 
 ## 2. Create the shared Python environment
 

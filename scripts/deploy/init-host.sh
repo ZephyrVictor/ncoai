@@ -6,14 +6,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/deploy/common.sh"
 source_env_files host
 
+# Non-interactive SSH sessions may omit the default uv installation directory.
+if ! command -v uv >/dev/null 2>&1 && [[ -x "$HOME/.local/bin/uv" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 VENV_DIR="$ROOT_DIR/.venv"
+LITELLM_VENV_DIR="$ROOT_DIR/.venv-litellm"
 TOOLCHAIN_DIR="$ROOT_DIR/.local/toolchain"
-NODE_VERSION="${CHAINLIT_NODE_VERSION:-v20.20.1}"
+NODE_VERSION="${CHAINLIT_NODE_VERSION:-v24.22.1}"
 NODE_DIR="$TOOLCHAIN_DIR/node-${NODE_VERSION}-linux-x64"
 CHAINLIT_VENDOR_DIR="$ROOT_DIR/apps/chainlit/vendor/chainlit"
 FRONTEND_DIST_DIR="$CHAINLIT_VENDOR_DIR/backend/chainlit/frontend/dist"
 COPILOT_DIST_DIR="$CHAINLIT_VENDOR_DIR/backend/chainlit/copilot/dist"
 BUILD_CHAINLIT_FRONTEND="${BUILD_CHAINLIT_FRONTEND:-auto}"
+export BUILD_CHAINLIT_FRONTEND
 ALLOW_NODE_DOWNLOAD="${ALLOW_NODE_DOWNLOAD:-1}"
 INSTALL_PLAYWRIGHT_BROWSERS="${INSTALL_PLAYWRIGHT_BROWSERS:-1}"
 UV_PIP_EXTRA_ARGS="${UV_PIP_EXTRA_ARGS:-}"
@@ -44,16 +51,39 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   echo "[INFO] Creating virtualenv at $VENV_DIR"
   uv venv "$VENV_DIR" --python 3.11
 fi
+if [[ ! -x "$LITELLM_VENV_DIR/bin/python" ]]; then
+  echo "[INFO] Creating LiteLLM virtualenv at $LITELLM_VENV_DIR"
+  uv venv "$LITELLM_VENV_DIR" --python 3.11
+fi
 
-if [[ ! -x "$NODE_DIR/bin/node" ]]; then
-  if [[ "$BUILD_CHAINLIT_FRONTEND" != "0" && "$ALLOW_NODE_DOWNLOAD" == "1" ]]; then
-    need_cmd curl
-    need_cmd tar
-    echo "[INFO] Installing local Node.js ${NODE_VERSION}"
-    mkdir -p "$TOOLCHAIN_DIR"
-    cd "$TOOLCHAIN_DIR"
-    curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/$(basename "$NODE_DIR").tar.xz"
-    tar -xf "$(basename "$NODE_DIR").tar.xz"
+if [[ ! -x "$NODE_DIR/bin/node" ]] && ! command -v node >/dev/null 2>&1 &&
+  [[ "$BUILD_CHAINLIT_FRONTEND" != "0" && "$ALLOW_NODE_DOWNLOAD" == "1" ]] &&
+  ! { [[ "$BUILD_CHAINLIT_FRONTEND" == "auto" && -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" ]]; }; then
+  need_cmd curl
+  need_cmd tar
+  echo "[INFO] Installing local Node.js ${NODE_VERSION}"
+  cd "$TOOLCHAIN_DIR"
+  curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/$(basename "$NODE_DIR").tar.xz"
+  tar -xf "$(basename "$NODE_DIR").tar.xz"
+fi
+
+if [[ "$BUILD_CHAINLIT_FRONTEND" == "auto" && -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" ]] &&
+  [[ ! -x "$NODE_DIR/bin/node" ]] && ! command -v node >/dev/null 2>&1; then
+  BUILD_CHAINLIT_FRONTEND=0
+  export BUILD_CHAINLIT_FRONTEND
+fi
+
+if [[ "$BUILD_CHAINLIT_FRONTEND" != "0" ]]; then
+  if [[ -x "$NODE_DIR/bin/node" ]]; then
+    export PATH="$NODE_DIR/bin:$PATH"
+  elif ! command -v node >/dev/null 2>&1; then
+    echo "[ERROR] Node.js is required to build Chainlit frontend assets." >&2
+    exit 1
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    need_cmd corepack
+    corepack enable
+    corepack prepare pnpm@9.15.9 --activate >/dev/null
   fi
 fi
 
@@ -63,7 +93,7 @@ export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
 
 echo "[INFO] Installing Python dependencies into $VENV_DIR"
 read -r -a UV_PIP_EXTRA_ARGS_ARR <<< "$UV_PIP_EXTRA_ARGS"
-uv pip install \
+uv pip install --upgrade \
   "${UV_PIP_EXTRA_ARGS_ARR[@]}" \
   asyncpg \
   hatchling \
@@ -74,8 +104,13 @@ uv pip install \
   tiktoken \
   -e "$ROOT_DIR/apps/admin" \
   -e "$ROOT_DIR/apps/chainlit" \
-  -e "$ROOT_DIR/apps/chainlit/vendor/chainlit/backend[custom-data]" \
-  -e "$ROOT_DIR/middleware/litellm[proxy]"
+  -e "$ROOT_DIR/apps/chainlit/vendor/chainlit/backend[custom-data]"
+
+echo "[INFO] Installing LiteLLM into $LITELLM_VENV_DIR"
+uv pip install --python "$LITELLM_VENV_DIR/bin/python" --upgrade \
+  "${UV_PIP_EXTRA_ARGS_ARR[@]}" \
+  "psycopg[binary]" \
+  "litellm[proxy]>=1.106.4,<2.0.0"
 
 if [[ "$INSTALL_PLAYWRIGHT_BROWSERS" == "1" ]]; then
   echo "[INFO] Installing Playwright Chromium browser"
@@ -83,9 +118,13 @@ if [[ "$INSTALL_PLAYWRIGHT_BROWSERS" == "1" ]]; then
 fi
 
 if [[ "$BUILD_CHAINLIT_FRONTEND" == "0" ]]; then
+  if [[ ! -d "$FRONTEND_DIST_DIR" || ! -d "$COPILOT_DIST_DIR" ]]; then
+    echo "[ERROR] Prebuilt Chainlit frontend assets are required when BUILD_CHAINLIT_FRONTEND=0." >&2
+    exit 1
+  fi
   echo "[INFO] Skipping Chainlit frontend build because BUILD_CHAINLIT_FRONTEND=0"
-elif [[ "$BUILD_CHAINLIT_FRONTEND" == "auto" && -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" && ! -x "$NODE_DIR/bin/node" ]] && ! command -v node >/dev/null 2>&1; then
-  echo "[INFO] Reusing existing Chainlit frontend assets; Node.js is not installed and auto-build is disabled"
+elif [[ -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" ]]; then
+  echo "[INFO] Chainlit frontend assets are ready"
 else
   if [[ -x "$NODE_DIR/bin/node" ]]; then
     export PATH="$NODE_DIR/bin:$PATH"
@@ -97,8 +136,6 @@ else
     exit 1
   fi
 
-  corepack enable
-  corepack prepare pnpm@9.15.9 --activate >/dev/null
   echo "[INFO] Building Chainlit frontend assets"
   python "$CHAINLIT_VENDOR_DIR/backend/build.py"
 fi

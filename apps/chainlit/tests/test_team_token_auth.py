@@ -230,18 +230,22 @@ async def test_get_team_token_login_page_preserves_next_path(team_token_mode) ->
 
 
 def test_configure_team_token_auth_mode_registers_login_routes(team_token_mode) -> None:
-    route_paths = [
-        route.path
-        for route in chainlit_app.chainlit_app.router.routes
-        if getattr(route, "path", None)
-    ]
+    routes = chainlit_app.chainlit_app.router.routes
+    route_paths = [getattr(route, "path", None) for route in routes]
+    fallback_index = next(
+        index
+        for index, route in enumerate(routes)
+        if getattr(route, "path", None) == "/{full_path:path}"
+        or any(
+            getattr(child, "path", None) == "/{full_path:path}"
+            for child in getattr(getattr(route, "original_router", None), "routes", ())
+        )
+    )
 
     assert chainlit_app.chainlit_route_exists("/login", "GET")
     assert chainlit_app.chainlit_route_exists("/api/team-token/login", "POST")
-    assert route_paths.index("/login") < route_paths.index("/{full_path:path}")
-    assert route_paths.index("/api/team-token/login") < route_paths.index(
-        "/{full_path:path}"
-    )
+    assert route_paths.index("/login") < fallback_index
+    assert route_paths.index("/api/team-token/login") < fallback_index
 
 
 @pytest.mark.asyncio

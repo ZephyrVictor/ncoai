@@ -33,7 +33,12 @@ const pickNewestQuota = (
   return preferredTime >= fallbackTime ? preferred : fallback;
 };
 
-export const useQuotaSummary = () => {
+export const useQuotaSummary = (): {
+  threadQuota: IQuotaSummary | undefined;
+  userQuota: IQuotaSummary | undefined;
+  refreshUserQuota: () => Promise<IQuotaSummary | undefined>;
+  setThreadQuota: (value: IQuotaSummary | undefined) => void;
+} => {
   const client = useContext(ChainlitContext);
   const setUserQuota = useSetRecoilState(userQuotaState);
   const setThreadQuota = useSetRecoilState(threadQuotaState);

@@ -1,8 +1,8 @@
-import { atom } from 'recoil';
+import { atom, type RecoilState } from 'recoil';
 
 const localUserEnv = localStorage.getItem('userEnv');
 
-export const userEnvState = atom<Record<string, string>>({
+export const userEnvState: RecoilState<Record<string, string>> = atom<Record<string, string>>({
   key: 'UserEnv',
   default: localUserEnv ? JSON.parse(localUserEnv) : {}
 });

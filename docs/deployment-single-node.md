@@ -46,7 +46,7 @@ bash scripts/deploy/prepare-env.sh
   - set `UV_PIP_EXTRA_ARGS="--no-index --find-links /path/to/wheels"`
 - If Node.js cannot be downloaded on the target host:
   - preinstall Node.js on the host, or
-  - keep the committed Chainlit dist assets and set `BUILD_CHAINLIT_FRONTEND=0`
+  - provide prebuilt Chainlit frontend and copilot dist assets and set `BUILD_CHAINLIT_FRONTEND=0`
 - If Playwright browsers cannot be downloaded on the target host:
   - preinstall them separately, or
   - set `INSTALL_PLAYWRIGHT_BROWSERS=0` and skip browser E2E on that machine
@@ -280,13 +280,13 @@ If your registry mirror is constrained, preload or mirror those exact images fir
 
 Required:
 
-- `postgres:16` -> container `ncoai-postgres` -> port `55432`
-- `redis:7` -> container `ncoai-redis` -> port `6379`
+- `postgres:19` -> container `ncoai-postgres` -> port `55432`
+- `redis:8` -> container `ncoai-redis` -> port `6379`
 - `nginx:alpine` -> container `ncoai-nginx` -> port `8088`
 - `prom/prometheus:latest` -> container `ncoai-prometheus` -> port `9090`
 - `grafana/grafana:latest` -> container `ncoai-grafana` -> port `3001`
-- `grafana/loki:3.1.0` -> container `ncoai-loki` -> port `3101`
-- `grafana/promtail:3.1.0` -> container `ncoai-promtail`
+- `grafana/loki:3.7.9` -> container `ncoai-loki` -> port `3101`
+- `grafana/alloy:v1.21.2` -> container `ncoai-alloy`
 
 Recommended:
 

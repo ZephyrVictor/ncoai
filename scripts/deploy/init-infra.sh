@@ -30,7 +30,7 @@ for container in \
   ncoai-prometheus \
   ncoai-grafana \
   ncoai-loki \
-  ncoai-promtail \
+  ncoai-alloy \
   ncoai-node-exporter \
   ncoai-postgres-exporter \
   ncoai-redis-exporter \

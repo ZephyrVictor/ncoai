@@ -10,7 +10,7 @@ The deployment now uses two compose entrypoints:
   - `prometheus`
   - `grafana`
   - `loki`
-  - `promtail`
+  - `alloy`
   - `node-exporter`
   - `postgres-exporter`
   - `redis-exporter`

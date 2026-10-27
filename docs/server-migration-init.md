@@ -24,7 +24,7 @@
   - `prometheus`
   - `grafana`
   - `loki`
-  - `promtail`
+  - `alloy`
   - exporters
 
 这也是为什么迁移时不能只执行 `python3 devctl.py up`。它只负责宿主机应用，不负责容器、数据库初始化和表结构引导。
@@ -242,7 +242,7 @@ bash scripts/deploy/validate.sh
   - 自动执行 `init-db.sh`
 - `scripts/deploy/init-host.sh`
   - 检查宿主机依赖
-  - 创建 `.venv`
+  - 创建 `.venv` 和独立的 `.venv-litellm`
   - 安装 Python 依赖
   - 按需安装 Node.js
   - 按需安装 Playwright Chromium

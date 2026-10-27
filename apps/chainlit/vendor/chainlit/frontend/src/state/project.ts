@@ -1,11 +1,11 @@
-import { atom } from 'recoil';
+import { atom, type RecoilState } from 'recoil';
 
-export const chatSettingsOpenState = atom<boolean>({
+export const chatSettingsOpenState: RecoilState<boolean> = atom<boolean>({
   key: 'chatSettingsOpen',
   default: false
 });
 
-export const chatSettingsSidebarOpenState = atom<boolean>({
+export const chatSettingsSidebarOpenState: RecoilState<boolean> = atom<boolean>({
   key: 'chatSettingsSidebarOpen',
   default: false
 });

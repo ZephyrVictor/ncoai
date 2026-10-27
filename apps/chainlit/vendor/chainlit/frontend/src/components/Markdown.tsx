@@ -1,8 +1,7 @@
 import { cn } from '@/lib/utils';
 import { omit } from 'lodash';
 import { useContext, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { PluggableList } from 'react-markdown/lib';
+import ReactMarkdown, { type Options as MarkdownOptions } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import remarkDirective from 'remark-directive';
@@ -33,6 +32,8 @@ import {
   alertComponents,
   normalizeAlertType
 } from './MarkdownAlert';
+
+type PluggableList = NonNullable<MarkdownOptions['rehypePlugins']>;
 
 interface Props {
   allowHtml?: boolean;
