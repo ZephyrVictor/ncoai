@@ -125,6 +125,7 @@ class QuotaSettlement:
             "session_limit_tokens": self.thread_summary.limit_tokens,
             "user_used_tokens": self.user_summary.used_tokens,
             "user_limit_tokens": self.user_summary.limit_tokens,
+            "user_policy_version": self.user_summary.policy_version,
             "updated_at": self.thread_summary.updated_at or self.user_summary.updated_at,
         }
 

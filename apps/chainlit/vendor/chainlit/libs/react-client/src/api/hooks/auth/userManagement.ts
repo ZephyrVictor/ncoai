@@ -20,10 +20,12 @@ export const useUserManagement = () => {
   }, [userData, setUser]);
 
   useEffect(() => {
-    if (error) {
+    // A failed revalidation can be a temporary network or server error.
+    // Only an explicit authentication rejection invalidates the user.
+    if (error && 'status' in error && error.status === 401) {
       setUser(null);
     }
-  }, [error]);
+  }, [error, setUser]);
 
   return { user, setUserFromAPI };
 };

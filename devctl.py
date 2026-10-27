@@ -454,7 +454,7 @@ def service_readiness_urls(
     if service == "litellm":
         port = merged_env.get("LITELLM_PORT", "33455")
         return [
-            f"http://127.0.0.1:{port}/health",
+            f"http://127.0.0.1:{port}/health/readiness",
             f"http://127.0.0.1:{port}/v1/models",
         ]
     if service == "chainlit":
@@ -469,9 +469,9 @@ def service_readiness_urls(
 
 
 def should_wait_for_readiness(env: dict[str, str] | None = None) -> bool:
-    values = env or load_env("host")
-    raw = values.get("DEVCTL_WAIT_FOR_READINESS", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    values = env if env is not None else load_env("host")
+    raw = values.get("DEVCTL_WAIT_FOR_READINESS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def wait_for_service_readiness(
@@ -506,11 +506,15 @@ def wait_for_service_readiness(
 
     deadline = time.time() + SERVICES[service].readiness_timeout_seconds
     last_error = ""
+    headers = {}
+    if service == "litellm" and merged_env.get("LITELLM_MASTER_KEY"):
+        headers["Authorization"] = f"Bearer {merged_env['LITELLM_MASTER_KEY']}"
     while time.time() < deadline:
         for url in urls:
             try:
-                with urllib.request.urlopen(url, timeout=5) as response:
-                    if 200 <= response.status < 500:
+                request = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    if 200 <= response.status < 300:
                         return True
             except urllib.error.URLError as exc:
                 last_error = str(exc)

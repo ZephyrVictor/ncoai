@@ -22,7 +22,7 @@
 
 100 并发测试总耗时 159.088 秒，吞吐 0.629 请求/秒，GPU 满载，观测到每卡显存最高约 43,691 MiB。并发达到 100 时会产生排队；该数字不能作为 100 人同时流畅对话的保证。
 
-以上为 vLLM 直连的整次请求耗时。首 token 延迟（TTFT）的补测见下表；未对 Nginx → Chainlit → LiteLLM → vLLM 完整链路做同规模并发压测。浏览器 E2E 单独验证了完整链路的功能。
+以上为 vLLM 直连的整次请求耗时。首 token 延迟（TTFT）的补测见下表；前端完整链路的浏览器并发补测见后文，两次测量的输出长度不同。
 
 原始请求结果保存在服务器与本地仓库的忽略目录中：
 
@@ -45,7 +45,47 @@
 
 测量脚本、原始结果及关闭核查保存在本地忽略目录 `.local/acceptance/`：`measure_ttft.py`、`ttft-single.json`、`ttft-16c.json`、`ttft-100c.json`、`ttft-measurement.log`、`ttft-shutdown-verification.txt`。脚本、原始结果和测量日志在服务器同一路径也有副本。
 
+## 前端 Chat 与自动预热补测
+
+`devctl up apps` 默认等待 vLLM 模型就绪，使用生产 system prompt 执行 4 次长短输入预热，再启动下游应用。预热直接访问模型，不计入用户额度。重启模型后需重新预热；也可手动执行 `python3 devctl.py warmup`。预热减少启动开销，高并发下仍需等待前面的生成完成。
+
+使用 `scripts/chat_e2e_latency.py` 在 fjw25 上运行真实 Chromium，经 `http://127.0.0.1:8088/chat` 登录独立用户，覆盖 Nginx → Chainlit → LiteLLM → vLLM。计时从点击发送开始，到浏览器 DOM 首次显示非空答案正文结束，包含应用排队及渲染；“首反馈”为前端占位或状态首次出现，不能当作模型首字。测量不包含用户外部网络延迟及页面首次加载。
+
+浏览器环境为 Playwright 1.64.1 / Chromium 156.0.8078.4，并发会话使用同一浏览器中的独立 context。测试机的浏览器资源争用也会计入结果，与不同设备上各运行一个浏览器的负载并不完全相同。
+
+| 并发数 | 请求数 | 成功 / 失败 | 平均首字（秒） | p95 首字（秒） | 最慢首字（秒） | 平均首反馈（秒） |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3 | 3 / 0 | 0.244 | 0.282 | 0.288 | 0.085 |
+| 16 | 16 | 16 / 0 | 1.580 | 1.789 | 1.802 | 0.160 |
+| 100（认证修复后） | 100 | 100 / 0 | 53.724 | 100.397 | 100.447 | 1.004 |
+
+表中单用户与 16 并发采用全部后台任务结算后执行的独立复测（`chat-latency-isolated-small.json`），100 并发采用完整最终验收（`chat-latency-accepted.json`）。完整验收开始时，修复前认证故障注入留下的一条后台生成尚在完成，因此额外复测低并发，排除该负载对结果的影响。
+
+单用户组为短中文回答，实际输出 35–50 token，平均 43 token；16 并发组请求 40 行编号回答，每次实际输出 551 token，提交时间跨度 0.004 秒，平均整次耗时 24.760 秒。100 并发最终复测的提交跨度为 0.203 秒，每次输出 551 token，平均整次耗时 83.791 秒，最慢 131.132 秒；70 个页面观察到排队提示。该输出长度与 vLLM 直连测试的 880 token 不同，不能据此直接计算前后加速比例。单用户仅 3 个样本，p95 参考价值有限。
+
+首轮 100 并发中有 94 个页面通过、6 个页面失败，失败截图显示白页，页面中的计时探针丢失；数据库中全部 100 个请求均完成并结算。随后仅增加导航、主文档响应、renderer crash、控制台和请求失败诊断，未改变生产源码，复测 100/100 通过，生成期间未观察到页面导航、crash、JavaScript 异常、HTTP 5xx 或 WebSocket 断开。
+
+恢复停止控制后再次执行完整浏览器验收，单用户 3/3、16 并发 16/16 通过，但 100 并发有 99/100 通过、1 个页面再次失败。这次诊断明确记录：`/chat/user` 重新校验请求发生 `net::ERR_SOCKET_NOT_CONNECTED`，前端随后跳转至 `/chat/login`；截图捕获的是登录页加载时的空白阶段。`useUserManagement` 原来对任何 API 错误执行 `setUser(null)`，将临时网络失败误判为登录失效。现在仅 HTTP 401 清除登录用户，网络和 5xx 错误保留现有登录状态，并交由 SWR 重试。首次 6 个白页缺少同等诊断，无法逐个确认是否均为此原因，原始失败记录全部保留。
+
+对修复前版本注入 `/chat/user` 连接失败，稳定复现 `Network error incorrectly signed out the user`；原始结果为 `chat-auth-fault-before-fix.json`。新增回归覆盖网络异常、503 后保留登录并恢复用户数据，以及 401 正常清除登录。浏览器生命周期脚本也加入同样的真实请求故障注入，要求生成控制仍可用且后续认证重试返回 200。
+
+认证修复后的完整验收通过：100/100 并发页面完成流式回答，未出现生成期间的意外导航、renderer crash、JavaScript 异常、HTTP 5xx 或 WebSocket 断开，可见总用量与结算 API 一致。随后主动中断认证重新校验请求，Chat 保持登录、停止按钮仍可用，解除故障后真实 `/chat/user` 重试返回 200；停止、后续聊天、生成中刷新恢复、再次停止与复制均通过。
+
+浏览器验收发现并修复了两处前端问题：首轮提问分配 thread ID 时，连接回调随之改变，导致多余的 WebSocket 重连；现在通过 ref 获取最新 thread ID，保持连接回调稳定。结算消息缺少用户配额版本号，导致右上角总用量被旧 API 缓存覆盖；现在保留版本号，并直接断言可见总用量与结算 API 一致。
+
+独立生命周期验收还发现：生成中刷新并恢复 thread 后，正文继续增长，但生成状态和停止按钮没有恢复。现在从服务端活跃消息恢复状态，服务端终结消息会清除旧的本地生成快照；后端 registry 保存任务和用户归属，允许同一认证用户通过新 socket 取消原任务，重复取消不打断结算。该实现适用于当前单 worker 部署，未验证跨进程取消。
+
+修复后的生命周期复测通过：首次停止后正文不再增长、预留归零；新会话继续聊天成功；最终验收中生成后导航恢复的正文从 119 字符增长至 1,713 字符；停止按钮恢复并成功停止原任务，预留再次归零、输入恢复、复制按钮确认成功。
+
+启动流程还修复了进程存活即报告成功的问题：默认等待应用 HTTP 健康检查，LiteLLM 使用带认证的 `/health/readiness`。前端显式重建选项 `BUILD_CHAINLIT_FRONTEND=1` 现在会更新已有构建，源码部署同时更新前端 dist 和后端打包副本。
+
+本轮回归：根目录 `tests` 与 `apps/chainlit/tests` 共 95 passed；React 客户端测试 27 passed，含首轮 thread ID 变化保持连接、恢复停止控制、服务端终结清理快照、配额版本和认证恢复回归；React 客户端及生产前端构建通过。随后加强重复取消保护，Chat 取消相关后端测试 7 passed，覆盖应用清除 cancellation 后仍不得再次打断结算的情况。
+
+原始结果在本地与服务器 `.local/acceptance/` 保留：`100c-first/`、`chat-latency-100c-diagnostic.json`、`chat-latency-100c-diagnostic.log`、`lifecycle-first/`、`chat-latency-lifecycle-retest.json`、`chat-latency-final.json`、`chat-auth-fault-before-fix.json`、`chat-latency-accepted.json`、`chat-latency-isolated-small.json` 和对应日志、截图。登录前的匿名 API 401 与主动注入的网络错误会出现在控制台诊断中；上述 JavaScript 异常断言指 `pageerror`，不将正常认证跳转误记为生成失败。
+
 ## 功能与依赖验证
+
+以下为本次前端延迟补测之前的完整部署验收记录：
 
 - 项目 Python 测试：148 passed。
 - 定制 Chainlit 选定后端测试：110 passed。
@@ -77,3 +117,7 @@
 通过 `devctl.py down apps` 和 Compose `down` 关闭，未删除模型或数据库卷。验收数据（含测试用户、账本与测试设置的 20,000 token 全局配额）随数据库卷保留。关闭核查记录位于 `.local/acceptance/shutdown-verification.txt`。
 
 TTFT 补测仅重新启动 vLLM，脚本结束时自动执行 `devctl.py down vllm`。2026-10-27 09:37:15 UTC 再次核查：全部 ncoai 应用停止，`ncoai-dev` tmux 会话退出，vLLM 端口 12233 无监听，运行中的 `ncoai-*` 容器为 0；4 张 GPU 均恢复为 10 MiB 显存、0% 利用率。
+
+真实 Chat 最终验收结束后，2026-10-27 10:46:39 UTC 数据核查：账本处于 reserved 状态的记录为 0，用户和会话汇总的 reserved tokens 均为 0；账本共 513 条 settled、1 条 expired。vLLM 运行中与等待中的请求均为 0。结果保存在 `.local/acceptance/chat-final-data-verification.json`。
+
+随后执行 `devctl.py down apps` 与 Compose `down`，2026-10-27 10:48:31 UTC 核查：全部 ncoai 应用停止，`ncoai-dev` tmux 会话退出，运行中的 `ncoai-*` 容器为 0，应用、数据库和监控端口无残留监听。4 张 GPU 均为 10 MiB 显存，无计算进程；瞬时利用率为 0–1%。其他项目的 `n1ctf-bot-1`、`n1ctf-orchestrator-1`、`harmony_standby` 继续运行。模型和数据库卷保留，未使用 `down -v`。核查原始记录在本地与服务器 `.local/acceptance/chat-shutdown-verification.txt`。

@@ -138,6 +138,13 @@ generation. A failed warmup returns a nonzero status and stops `devctl up`
 before downstream startup. `VLLM_WARMUP_ENABLED=0` disables this gate for
 rollback. Restarting vLLM clears the cache; run warmup again after restart.
 
+`devctl up` also waits for each application HTTP health endpoint before
+reporting startup success. LiteLLM readiness uses the master key and
+`/health/readiness`, which avoids triggering a model inference health probe.
+Set `DEVCTL_WAIT_FOR_READINESS=0` only when deliberately starting processes
+without waiting for HTTP readiness. Nginx can return 502 while applications
+are still starting; expose the deployment to users after startup completes.
+
 LiteLLM defaults to a 180-second vLLM request timeout through
 `VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS` (and
 `VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS` when failover is configured). Chainlit's
@@ -147,6 +154,52 @@ admission and LiteLLM queue waits default to 120 seconds, adjustable with
 to avoid per-request debug logging. These are timeouts, not a throughput
 guarantee. With `MAX_NUM_SEQS=32`, the default global admission limit is 25
 active generations; other users can remain connected or queue for a slot.
+
+Warmup reduces initialization overhead. Queueing under load remains governed
+by model throughput, output length, and the number of active generations.
+To measure what a Chat user sees through Nginx, including browser rendering:
+
+```bash
+.venv/bin/python scripts/chat_e2e_latency.py --base-url http://127.0.0.1:8088
+```
+
+This creates dedicated users, measures click-to-content latency for 1, 16,
+and 100 browser sessions, checks incremental streaming, settled quota, browser
+errors and input recovery, then tests stop, refresh recovery and copy. It
+requires a running deployment and an active quota window. It preserves the
+global quota policy. Results and screenshots go to `.local/acceptance/`.
+Its concurrent prompt requests 40 numbered lines; inspect actual token usage
+before comparing its latency to a test that forces 880 output tokens.
+The lifecycle check also interrupts a real `/user` revalidation request
+during generation and verifies that Chat remains authenticated, recovers
+with HTTP 200, and can still stop the generation. A temporary connection or
+server failure preserves the current user; HTTP 401 invalidates the session.
+
+Use `--concurrency 1 16 --skip-lifecycle` for a smaller latency run, or
+`--lifecycle-only` to check interruption and recovery separately. Set
+`--output-name chat-latency-retest.json` to retain a previous JSON report;
+archive existing screenshots before repeating the same scenario.
+
+When an authenticated user resumes an active thread, Chat restores its
+generation state and stop control. In the current single-worker deployment,
+the application keeps ownership and task references in its generation
+registry, so a replacement socket can stop that user's original generation
+and settle partial usage. This registry is process-local; stopping a task
+on another worker requires additional coordination before scaling workers.
+
+After changing frontend source, rebuild the UI even when dist assets already
+exist, then restart Chainlit:
+
+```bash
+BUILD_CHAINLIT_FRONTEND=1 bash scripts/deploy/init-host.sh
+python3 devctl.py down chainlit
+python3 devctl.py up chainlit
+```
+
+In a source checkout Chainlit prefers
+`vendor/chainlit/frontend/dist` over the packaged backend copy; deploying
+prebuilt assets must update both copies. `BUILD_CHAINLIT_FRONTEND=auto` reuses
+existing builds.
 
 Before promising 200 simultaneous prompts, load test the actual checkpoint,
 prompt lengths, output lengths, and arrival rate. Watch vLLM `/metrics` for

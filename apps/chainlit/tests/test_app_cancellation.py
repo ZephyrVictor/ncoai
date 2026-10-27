@@ -17,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import app as chainlit_app  # noqa: E402
+from generation_registry import GenerationRegistry  # noqa: E402
 
 
 class FakeMessage:
@@ -175,6 +176,84 @@ def base_patches(monkeypatch):
             remove=AsyncMock(),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_repeated_stop_does_not_interrupt_settlement_cleanup():
+    registry = GenerationRegistry()
+    started = asyncio.Event()
+    cleaning_up = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+
+    async def generation():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # on_message clears cancellation before settling partial usage.
+            asyncio.current_task().uncancel()
+            cleaning_up.set()
+            await finish_cleanup.wait()
+
+    task = asyncio.create_task(generation())
+    try:
+        await started.wait()
+        await registry.start(thread_id="thread-1", assistant_message_id="assistant-1",
+                             user_identifier="user-1", task=task)
+        assert await registry.cancel_for_user("thread-1", "user-1") is task
+        await cleaning_up.wait()
+        assert await registry.cancel_for_user("thread-1", "user-1") is task
+        assert task.cancelling() == 0
+    finally:
+        finish_cleanup.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_stop_after_reconnect_cancels_owned_generation_and_settles(monkeypatch, base_patches):
+    registry = GenerationRegistry()
+    monkeypatch.setattr(chainlit_app, "GENERATION_REGISTRY", registry)
+    token_received = asyncio.Event()
+
+    class WaitingStream:
+        def __aiter__(self):
+            return self.parts()
+
+        async def parts(self):
+            yield SimpleNamespace(
+                id="provider-request-id", usage=None,
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="hello"))],
+            )
+            token_received.set()
+            await asyncio.Event().wait()
+
+    stream = WaitingStream()
+    client = make_fake_client(SimpleNamespace(create=AsyncMock(return_value=stream)))
+    monkeypatch.setattr(chainlit_app, "build_client", Mock(return_value=client))
+    reservation = SimpleNamespace(request_id="reconnected", allowed_completion_tokens=256)
+    quota = SimpleNamespace(
+        reserve=AsyncMock(return_value=reservation), release=AsyncMock(),
+        settle=AsyncMock(return_value=SimpleNamespace(to_message_metadata=lambda: {})),
+    )
+    monkeypatch.setattr(chainlit_app, "QUOTA_SERVICE", quota)
+    task = asyncio.create_task(chainlit_app.on_message(FakeMessage("prompt")))
+    try:
+        await asyncio.wait_for(token_received.wait(), 2)
+        # A different authenticated user cannot stop this generation.
+        monkeypatch.setattr(chainlit_app, "current_user_identifier", lambda: "other-user")
+        await chainlit_app.on_stop()
+        assert not task.done() and not task.cancelling()
+        monkeypatch.setattr(chainlit_app, "current_user_identifier", lambda: "user-1")
+        await asyncio.wait_for(chainlit_app.on_stop(), 2)
+        assert task.done()
+        quota.settle.assert_awaited_once()
+        assert quota.settle.await_args.kwargs['assistant_content'] == "hello"
+        quota.release.assert_not_awaited()
+        assert await registry.get("thread-1") is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await task
 
 
 @pytest.mark.asyncio
