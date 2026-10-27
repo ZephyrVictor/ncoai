@@ -197,7 +197,7 @@ def load_settings() -> AppSettings:
         f"chainlit-{worker_index}",
     ).strip() or f"chainlit-{worker_index}"
     max_num_seqs = max(int(os.getenv("MAX_NUM_SEQS", "32")), 1)
-    default_global_admission_limit = max(int(max_num_seqs * 0.8), 1)
+    default_global_admission_limit = max_num_seqs
     return AppSettings(
         database=DatabaseSettings(
             url=database_url,

@@ -111,7 +111,7 @@ environment does not override them:
 | `ENABLE_PREFIX_CACHING` | 1 | Reuse identical prompt blocks within the running vLLM process |
 | `MAX_MODEL_LEN` | 2048 | Per-request context limit |
 | `MAX_NUM_SEQS` | 32 | Active vLLM sequence limit; excess work queues upstream |
-| `MAX_NUM_BATCHED_TOKENS` | 8192 | Prefill scheduling budget |
+| `MAX_NUM_BATCHED_TOKENS` | 8192 | Total token budget per scheduler iteration, including prefill and decode |
 | `GPU_MEMORY_UTILIZATION` | 0.90 | GPU memory reservation target |
 | `ENFORCE_EAGER` | 0 | Allow CUDA graph capture when supported |
 | `ENABLE_FP8_KV` | 0 | Keep the default KV cache dtype until quality and memory are measured |
@@ -152,8 +152,27 @@ admission and LiteLLM queue waits default to 120 seconds, adjustable with
 `CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS` and
 `CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS`. `LITELLM_SET_VERBOSE` defaults to 0
 to avoid per-request debug logging. These are timeouts, not a throughput
-guarantee. With `MAX_NUM_SEQS=32`, the default global admission limit is 25
-active generations; other users can remain connected or queue for a slot.
+guarantee. The global admission limit defaults to `MAX_NUM_SEQS` (32 on fjw25),
+unless `CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT` overrides it. Other users can
+remain connected or queue for a slot. Increasing `MAX_NUM_SEQS` also raises
+this default, but requires restarting both vLLM and Chainlit.
+
+The current request path is browser → Nginx → one Chainlit worker → LiteLLM
+→ one vLLM engine with four tensor-parallel GPU workers. Nginx, PostgreSQL
+and Redis use Compose; the application and inference services run in host
+Python environments managed by `devctl` and tmux. Each GPU stores a shard of
+the model, and the GPUs cooperate on each batch through collective
+communication. `MAX_NUM_SEQS` applies to the entire engine; with TP=4 it is
+not multiplied by four.
+
+For this host, benchmark aligned application/engine limits of 32, then 64,
+and consider 96 or 128 only if memory and latency permit. Keep the same
+prompts, output lengths and offered load when comparing. Larger active
+batches can reduce admission wait while slowing each stream; compare
+rendered TTFT, per-stream generation speed, aggregate throughput, cache
+preemption and failures. The saved 2026-10-27 Chat latency measurements used
+the previous application limit of 25 and engine limit of 32; they do not
+measure the newly aligned limits.
 
 Warmup reduces initialization overhead. Queueing under load remains governed
 by model throughput, output length, and the number of active generations.
