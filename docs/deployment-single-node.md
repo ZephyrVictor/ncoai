@@ -152,7 +152,8 @@ admission and LiteLLM queue waits default to 120 seconds, adjustable with
 `CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS` and
 `CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS`. `LITELLM_SET_VERBOSE` defaults to 0
 to avoid per-request debug logging. These are timeouts, not a throughput
-guarantee. The global admission limit defaults to `MAX_NUM_SEQS` (32 on fjw25),
+guarantee. The global admission limit defaults to `MAX_NUM_SEQS` (64 on fjw25
+after the 2026-10-28 acceptance),
 unless `CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT` overrides it. Other users can
 remain connected or queue for a slot. Increasing `MAX_NUM_SEQS` also raises
 this default, but requires restarting both vLLM and Chainlit.
@@ -165,26 +166,33 @@ the model, and the GPUs cooperate on each batch through collective
 communication. `MAX_NUM_SEQS` applies to the entire engine; with TP=4 it is
 not multiplied by four.
 
-For this host, benchmark aligned application/engine limits of 32, then 64,
-and consider 96 or 128 only if memory and latency permit. Keep the same
+For this host, aligned application/engine limits of 32 and 64 have been
+benchmarked. The 2026-10-28 comparison found that TP4/64 improved aggregate
+throughput and first-token queue time over TP4/32, while slowing each active
+stream. Two TP2 instances did better on the direct vLLM burst, but the current
+Chat routing has not been validated for two replicas. See
+[`fjw25-tp-comparison-2026-10-28.md`](fjw25-tp-comparison-2026-10-28.md) for
+conditions, results, and limits. Consider larger limits only if memory and
+latency permit. Keep the same
 prompts, output lengths and offered load when comparing. Larger active
 batches can reduce admission wait while slowing each stream; compare
 rendered TTFT, per-stream generation speed, aggregate throughput, cache
 preemption and failures. The saved 2026-10-27 Chat latency measurements used
-the previous application limit of 25 and engine limit of 32; they do not
-measure the newly aligned limits.
+the previous application limit of 25 and engine limit of 32; the 2026-10-28
+report includes a browser run with both limits aligned at 64.
 
 Warmup reduces initialization overhead. Queueing under load remains governed
 by model throughput, output length, and the number of active generations.
 To measure what a Chat user sees through Nginx, including browser rendering:
 
 ```bash
-.venv/bin/python scripts/chat_e2e_latency.py --base-url http://127.0.0.1:8088
+.venv/bin/python scripts/chat_e2e_latency.py --base-url http://127.0.0.1:8088 --concurrency 1 16 64 100
 ```
 
 This creates dedicated users, measures click-to-content latency for 1, 16,
-and 100 browser sessions, checks incremental streaming, settled quota, browser
-errors and input recovery, then tests stop, refresh recovery and copy. It
+64 and 100 browser sessions, checks incremental streaming, settled quota,
+browser errors and input recovery, then tests two consecutive turns with
+retained context, stop, refresh recovery and copy. It
 requires a running deployment and an active quota window. It preserves the
 global quota policy. Results and screenshots go to `.local/acceptance/`.
 Its concurrent prompt requests 40 numbered lines; inspect actual token usage

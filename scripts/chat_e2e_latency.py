@@ -31,18 +31,21 @@ ERROR_TEXT = (
 )
 OBSERVER = r"""() => {
   window.chatProbe = {started: null, first_feedback_ms: null,
-    first_content_ms: null, queued: false, lengths: [], first_text: null};
+    first_content_ms: null, queued: false, lengths: [], first_text: null,
+    previous_messages: 0};
   document.addEventListener('click', e => {
     if (e.target.closest('#chat-submit')) {
       window.chatProbe = {started: performance.now(), first_feedback_ms: null,
         submitted_utc_ms: Date.now(), first_content_ms: null, queued: false,
-        lengths: [], first_text: null};
+        lengths: [], first_text: null,
+        previous_messages: document.querySelectorAll('[data-step-type="assistant_message"]').length};
     }
   }, true);
   new MutationObserver(() => {
     const p = window.chatProbe;
     if (p.started === null) return;
     const messages = document.querySelectorAll('[data-step-type="assistant_message"]');
+    if (messages.length <= p.previous_messages) return;
     const message = messages[messages.length - 1];
     if (!message) return;
     const now = performance.now() - p.started;
@@ -239,6 +242,32 @@ async def auth_network_recovery(page):
     return {'failed_revalidation_observed': True, 'authenticated_retry_succeeded': True}
 
 
+async def multi_turn(browser, admin, base, prefix, password, artifacts):
+    """Send consecutive turns in one thread and verify retained context."""
+    session = await prepare(browser, admin, base, prefix, 'multi-turn', password, asyncio.Semaphore(1))
+    page = session['page']
+    result = {'ok': False, 'turns': []}
+    try:
+        for index, prompt in enumerate((
+            '记住校验码 NCOAI-7264，然后用三句话解释为什么连续对话需要保留上下文。',
+            '上一条我让你记住的校验码是什么？先写校验码，再用三句话解释它用于什么测试。',
+        )):
+            row = await send(session, base, prompt, artifacts, f'multi-turn-{index}', 0)
+            result['turns'].append(row)
+            assert row['ok'], row.get('error', 'Consecutive turn failed')
+        answer = await page.locator(CONTENT).last.inner_text()
+        assert 'NCOAI-7264' in answer, f'Previous turn context missing: {answer[:500]}'
+        assert await page.locator(ASSISTANT).count() == 2, 'Previous response disappeared'
+        assert result['turns'][1]['quota']['used_tokens'] > result['turns'][0]['quota']['used_tokens']
+        result.update(ok=True, context_retained=True, assistant_messages=2)
+    except Exception as error:
+        result['error'] = str(error)
+        await page.screenshot(path=str(artifacts / 'chat-multi-turn-failed.png'))
+    finally:
+        await session['context'].close()
+    return result
+
+
 async def lifecycle(browser, admin, base, prefix, password, artifacts, env):
     """Verify stop, next request, and refresh during a real model generation."""
     session = await prepare(browser, admin, base, prefix, 'lifecycle', password, asyncio.Semaphore(1))
@@ -383,6 +412,10 @@ async def main(args):
                 if len(good) != count:
                     raise RuntimeError(f'Browser failures in {label}; see {path}')
             if not args.skip_lifecycle:
+                print('Checking consecutive turns and retained context', flush=True)
+                report['multi_turn'] = await multi_turn(browser, admin, base, prefix, password, artifacts)
+                path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+                assert report['multi_turn']['ok'], f'Consecutive Chat turns failed; see {path}'
                 print('Checking stop, follow-up, refresh recovery, and copy', flush=True)
                 report['lifecycle'] = await lifecycle(browser, admin, base, prefix, password, artifacts, env)
                 path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
