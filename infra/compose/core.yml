@@ -177,3 +177,9 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${COMPOSE_NETWORK_SUBNET:-10.188.0.0/24}
