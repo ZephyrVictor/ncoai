@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from ncoai_shared.vllm_replicas import replica_environments
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -52,6 +54,7 @@ class LiteLLMFailoverSettings:
     backup_endpoint: VLLMEndpoint | None
     primary_request_timeout_seconds: float
     backup_request_timeout_seconds: float
+    replica_endpoints: tuple[VLLMEndpoint, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +139,11 @@ def build_litellm_failover_settings(
         backup_request_timeout_seconds=parse_env_float(
             values.get("VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS"),
             default=180.0,
+        ),
+        replica_endpoints=tuple(
+            build_vllm_endpoint(build_local_origin(replica.get("VLLM_HOST", "127.0.0.1"),
+                                                  replica.get("VLLM_PORT", "12233")))
+            for replica in replica_environments(values)[1:]
         ),
     )
 
@@ -270,10 +278,14 @@ def build_litellm_template_context(
 ) -> dict[str, str]:
     values = dict(env or {})
     return {
-        "primary_model_block": _model_block(
+        "primary_model_block": "".join(_model_block(
             settings,
-            api_base=settings.primary_endpoint.api_base,
+            api_base=endpoint.api_base,
             timeout_seconds=settings.primary_request_timeout_seconds,
+        ) for endpoint in (settings.primary_endpoint, *settings.replica_endpoints)),
+        "router_settings_block": (
+            "router_settings:\n  routing_strategy: least-busy\n"
+            if settings.replica_endpoints else ""
         ),
         "litellm_set_verbose": format_yaml_bool(
             parse_env_bool(values.get("LITELLM_SET_VERBOSE"), default=False)

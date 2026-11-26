@@ -8,3 +8,4 @@ litellm_settings:
   drop_params: true
   telemetry: false
 ${fallbacks_block}
+${router_settings_block}

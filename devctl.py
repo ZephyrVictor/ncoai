@@ -44,6 +44,7 @@ class ServiceDefinition:
     script_relpath: str
     final_markers: tuple[str, ...]
     readiness_timeout_seconds: float = 120.0
+    alternate_final_markers: tuple[str, ...] = ()
 
     @property
     def script_path(self) -> Path:
@@ -51,7 +52,7 @@ class ServiceDefinition:
 
     @property
     def identity_markers(self) -> tuple[str, ...]:
-        return (str(self.script_path), *self.final_markers)
+        return (str(self.script_path), *self.final_markers, *self.alternate_final_markers)
 
 
 SERVICES: dict[str, ServiceDefinition] = {
@@ -65,6 +66,7 @@ SERVICES: dict[str, ServiceDefinition] = {
         name="vllm",
         script_relpath="scripts/vllm/start-local.sh",
         final_markers=("vllm.entrypoints.openai.api_server",),
+        alternate_final_markers=(str(ROOT / "scripts/vllm/start_replicas.py"),),
         readiness_timeout_seconds=900.0,
     ),
     "litellm": ServiceDefinition(
@@ -367,6 +369,8 @@ def pid_matches_service(pid: int, service: ServiceDefinition) -> bool:
     cmdline = read_cmdline(pid)
     return str(service.script_path) in cmdline or all(
         marker in cmdline for marker in service.final_markers
+    ) or bool(service.alternate_final_markers) and all(
+        marker in cmdline for marker in service.alternate_final_markers
     )
 
 
@@ -390,7 +394,9 @@ def discover_service_pids(service: ServiceDefinition) -> list[int]:
         pid = int(pid_str)
         if pid in {current_pid, current_ppid}:
             continue
-        if all(marker in args for marker in service.final_markers):
+        if all(marker in args for marker in service.final_markers) or (
+            service.alternate_final_markers and all(marker in args for marker in service.alternate_final_markers)
+        ):
             matches.append(pid)
     return matches
 
@@ -446,15 +452,14 @@ def service_readiness_urls(
     if env_overrides:
         merged_env.update(env_overrides)
     if service == "vllm":
-        port = merged_env.get("VLLM_PORT", "12233")
-        return [
-            f"http://127.0.0.1:{port}/health",
-            f"http://127.0.0.1:{port}/v1/models",
-        ]
+        from ncoai_shared.vllm_replicas import replica_environments
+        return [f"http://127.0.0.1:{replica.get('VLLM_PORT', '12233')}{path}"
+                for replica in replica_environments(merged_env)
+                for path in ("/health", "/v1/models")]
     if service == "litellm":
         port = merged_env.get("LITELLM_PORT", "33455")
         return [
-            f"http://127.0.0.1:{port}/health",
+            f"http://127.0.0.1:{port}/health/readiness",
             f"http://127.0.0.1:{port}/v1/models",
         ]
     if service == "chainlit":
@@ -469,9 +474,9 @@ def service_readiness_urls(
 
 
 def should_wait_for_readiness(env: dict[str, str] | None = None) -> bool:
-    values = env or load_env("host")
-    raw = values.get("DEVCTL_WAIT_FOR_READINESS", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    values = env if env is not None else load_env("host")
+    raw = values.get("DEVCTL_WAIT_FOR_READINESS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def wait_for_service_readiness(
@@ -506,11 +511,15 @@ def wait_for_service_readiness(
 
     deadline = time.time() + SERVICES[service].readiness_timeout_seconds
     last_error = ""
+    headers = {}
+    if service == "litellm" and merged_env.get("LITELLM_MASTER_KEY"):
+        headers["Authorization"] = f"Bearer {merged_env['LITELLM_MASTER_KEY']}"
     while time.time() < deadline:
         for url in urls:
             try:
-                with urllib.request.urlopen(url, timeout=5) as response:
-                    if 200 <= response.status < 500:
+                request = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    if 200 <= response.status < 300:
                         return True
             except urllib.error.URLError as exc:
                 last_error = str(exc)

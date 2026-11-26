@@ -111,7 +111,7 @@ environment does not override them:
 | `ENABLE_PREFIX_CACHING` | 1 | Reuse identical prompt blocks within the running vLLM process |
 | `MAX_MODEL_LEN` | 2048 | Per-request context limit |
 | `MAX_NUM_SEQS` | 32 | Active vLLM sequence limit; excess work queues upstream |
-| `MAX_NUM_BATCHED_TOKENS` | 8192 | Prefill scheduling budget |
+| `MAX_NUM_BATCHED_TOKENS` | 8192 | Total token budget per scheduler iteration, including prefill and decode |
 | `GPU_MEMORY_UTILIZATION` | 0.90 | GPU memory reservation target |
 | `ENFORCE_EAGER` | 0 | Allow CUDA graph capture when supported |
 | `ENABLE_FP8_KV` | 0 | Keep the default KV cache dtype until quality and memory are measured |
@@ -138,6 +138,13 @@ generation. A failed warmup returns a nonzero status and stops `devctl up`
 before downstream startup. `VLLM_WARMUP_ENABLED=0` disables this gate for
 rollback. Restarting vLLM clears the cache; run warmup again after restart.
 
+`devctl up` also waits for each application HTTP health endpoint before
+reporting startup success. LiteLLM readiness uses the master key and
+`/health/readiness`, which avoids triggering a model inference health probe.
+Set `DEVCTL_WAIT_FOR_READINESS=0` only when deliberately starting processes
+without waiting for HTTP readiness. Nginx can return 502 while applications
+are still starting; expose the deployment to users after startup completes.
+
 LiteLLM defaults to a 180-second vLLM request timeout through
 `VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS` (and
 `VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS` when failover is configured). Chainlit's
@@ -145,8 +152,81 @@ admission and LiteLLM queue waits default to 120 seconds, adjustable with
 `CHAINLIT_GLOBAL_ADMISSION_QUEUE_TIMEOUT_SECONDS` and
 `CHAINLIT_LITELLM_QUEUE_TIMEOUT_SECONDS`. `LITELLM_SET_VERBOSE` defaults to 0
 to avoid per-request debug logging. These are timeouts, not a throughput
-guarantee. With `MAX_NUM_SEQS=32`, the default global admission limit is 25
-active generations; other users can remain connected or queue for a slot.
+guarantee. The global admission limit defaults to `MAX_NUM_SEQS` (64 on fjw25
+after the 2026-10-28 acceptance),
+unless `CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT` overrides it. Other users can
+remain connected or queue for a slot. Increasing `MAX_NUM_SEQS` also raises
+this default, but requires restarting both vLLM and Chainlit.
+
+The current request path is browser → Nginx → one Chainlit worker → LiteLLM
+→ one vLLM engine with four tensor-parallel GPU workers. Nginx, PostgreSQL
+and Redis use Compose; the application and inference services run in host
+Python environments managed by `devctl` and tmux. Each GPU stores a shard of
+the model, and the GPUs cooperate on each batch through collective
+communication. `MAX_NUM_SEQS` applies to the entire engine; with TP=4 it is
+not multiplied by four.
+
+For this host, aligned application/engine limits of 32 and 64 have been
+benchmarked. The 2026-10-28 comparison found that TP4/64 improved aggregate
+throughput and first-token queue time over TP4/32, while slowing each active
+stream. Two TP2 instances did better on the direct vLLM burst, but the current
+Chat routing has not been validated for two replicas. See
+[`fjw25-tp-comparison-2026-10-28.md`](fjw25-tp-comparison-2026-10-28.md) for
+conditions, results, and limits. Consider larger limits only if memory and
+latency permit. Keep the same
+prompts, output lengths and offered load when comparing. Larger active
+batches can reduce admission wait while slowing each stream; compare
+rendered TTFT, per-stream generation speed, aggregate throughput, cache
+preemption and failures. The saved 2026-10-27 Chat latency measurements used
+the previous application limit of 25 and engine limit of 32; the 2026-10-28
+report includes a browser run with both limits aligned at 64.
+
+Warmup reduces initialization overhead. Queueing under load remains governed
+by model throughput, output length, and the number of active generations.
+To measure what a Chat user sees through Nginx, including browser rendering:
+
+```bash
+.venv/bin/python scripts/chat_e2e_latency.py --base-url http://127.0.0.1:8088 --concurrency 1 16 64 100
+```
+
+This creates dedicated users, measures click-to-content latency for 1, 16,
+64 and 100 browser sessions, checks incremental streaming, settled quota,
+browser errors and input recovery, then tests two consecutive turns with
+retained context, stop, refresh recovery and copy. It
+requires a running deployment and an active quota window. It preserves the
+global quota policy. Results and screenshots go to `.local/acceptance/`.
+Its concurrent prompt requests 40 numbered lines; inspect actual token usage
+before comparing its latency to a test that forces 880 output tokens.
+The lifecycle check also interrupts a real `/user` revalidation request
+during generation and verifies that Chat remains authenticated, recovers
+with HTTP 200, and can still stop the generation. A temporary connection or
+server failure preserves the current user; HTTP 401 invalidates the session.
+
+Use `--concurrency 1 16 --skip-lifecycle` for a smaller latency run, or
+`--lifecycle-only` to check interruption and recovery separately. Set
+`--output-name chat-latency-retest.json` to retain a previous JSON report;
+archive existing screenshots before repeating the same scenario.
+
+When an authenticated user resumes an active thread, Chat restores its
+generation state and stop control. In the current single-worker deployment,
+the application keeps ownership and task references in its generation
+registry, so a replacement socket can stop that user's original generation
+and settle partial usage. This registry is process-local; stopping a task
+on another worker requires additional coordination before scaling workers.
+
+After changing frontend source, rebuild the UI even when dist assets already
+exist, then restart Chainlit:
+
+```bash
+BUILD_CHAINLIT_FRONTEND=1 bash scripts/deploy/init-host.sh
+python3 devctl.py down chainlit
+python3 devctl.py up chainlit
+```
+
+In a source checkout Chainlit prefers
+`vendor/chainlit/frontend/dist` over the packaged backend copy; deploying
+prebuilt assets must update both copies. `BUILD_CHAINLIT_FRONTEND=auto` reuses
+existing builds.
 
 Before promising 200 simultaneous prompts, load test the actual checkpoint,
 prompt lengths, output lengths, and arrival rate. Watch vLLM `/metrics` for

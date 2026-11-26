@@ -23,6 +23,14 @@ def test_default_admission_matches_vllm_starting_profile(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
     settings = settings_module.load_settings()
-    assert settings.admission.max_inflight == 25
+    assert settings.admission.max_inflight == 32
     assert settings.admission.queue_timeout_seconds == 120
     assert settings.litellm.queue_timeout_seconds == 120
+
+
+def test_admission_tracks_custom_vllm_limit(monkeypatch) -> None:
+    monkeypatch.setenv("MAX_NUM_SEQS", "64")
+    monkeypatch.delenv("CHAINLIT_GLOBAL_ADMISSION_MAX_INFLIGHT", raising=False)
+
+    settings = settings_module.load_settings()
+    assert settings.admission.max_inflight == 64

@@ -197,7 +197,8 @@ def load_settings() -> AppSettings:
         f"chainlit-{worker_index}",
     ).strip() or f"chainlit-{worker_index}"
     max_num_seqs = max(int(os.getenv("MAX_NUM_SEQS", "32")), 1)
-    default_global_admission_limit = max(int(max_num_seqs * 0.8), 1)
+    from ncoai_shared.vllm_replicas import replica_environments
+    default_global_admission_limit = max_num_seqs * len(replica_environments(os.environ))
     return AppSettings(
         database=DatabaseSettings(
             url=database_url,
@@ -297,7 +298,8 @@ def load_settings() -> AppSettings:
                 worker_count,
             ),
             max_concurrent_requests=per_worker_capacity(
-                int(os.getenv("CHAINLIT_LITELLM_MAX_CONCURRENT_REQUESTS", "160")),
+                int(os.getenv("CHAINLIT_LITELLM_MAX_CONCURRENT_REQUESTS",
+                              str(max(160, default_global_admission_limit)))),
                 worker_count,
             ),
             queue_timeout_seconds=max(

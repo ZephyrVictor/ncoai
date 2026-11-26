@@ -59,6 +59,10 @@ if ! "$VLLM_PYTHON" -c "import vllm" >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ -n "${VLLM_REPLICA_GPU_GROUPS:-}" ]]; then
+  exec "$VLLM_PYTHON" "$ROOT_DIR/scripts/vllm/start_replicas.py"
+fi
+
 ARGS=(
   --host "$HOST"
   --port "$PORT"

@@ -6,8 +6,12 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from ncoai_shared.vllm_replicas import replica_environments
 
 
 def endpoint_origin(env: dict[str, str]) -> str:
@@ -92,7 +96,9 @@ def main() -> int:
     if args.ready_timeout <= 0 or args.request_timeout <= 0:
         parser.error("timeouts must be positive")
     try:
-        warmup(dict(os.environ), ready_timeout=args.ready_timeout, request_timeout=args.request_timeout)
+        for env in replica_environments(os.environ):
+            print(f"[INFO] Warming {endpoint_origin(env)}", flush=True)
+            warmup(env, ready_timeout=args.ready_timeout, request_timeout=args.request_timeout)
     except (RuntimeError, ValueError) as exc:
         print(f"[ERROR] vLLM warmup failed: {exc}", file=sys.stderr)
         return 1

@@ -103,6 +103,7 @@ const quotaSummaryFromTokenUsage = (
         ? {
             used_tokens: tokenUsage.user_used_tokens || 0,
             limit_tokens: userLimit,
+            policy_version: tokenUsage.user_policy_version,
             remaining_tokens: Math.max(
               userLimit - (tokenUsage.user_used_tokens || 0),
               0
@@ -166,8 +167,23 @@ const applyQuotaFromStep = (
   }
 };
 
+const findActiveGenerationStep = (steps: IStep[] = []): IStep | undefined => {
+  for (const step of [...steps].reverse()) {
+    const status = String(step.metadata?.generation_status || '');
+    if (
+      step.type === 'assistant_message' &&
+      (step.streaming ||
+        ['pending', 'queued', 'streaming', 'stopping'].includes(status))
+    ) {
+      return step;
+    }
+    const nested = findActiveGenerationStep(step.steps || []);
+    if (nested) return nested;
+  }
+};
+
 const hasStreamingStep = (steps: IStep[] = []) =>
-  steps.some((step) => step.streaming || hasStreamingStep(step.steps || []));
+  Boolean(findActiveGenerationStep(steps));
 
 const applyQuotaFromSteps = (
   steps: IStep[],
@@ -222,6 +238,7 @@ const useChatSession = () => {
 
   const [currentThreadId, setCurrentThreadId] =
     useRecoilState(currentThreadIdState);
+  const currentThreadIdRef = useRef(currentThreadId);
   const streamingResumeRefreshId = useRef(0);
   const generationRef = useRef<IGenerationState>(generation);
 
@@ -239,6 +256,7 @@ const useChatSession = () => {
 
   // Use currentThreadId as thread id in websocket header
   useEffect(() => {
+    currentThreadIdRef.current = currentThreadId;
     if (session?.socket) {
       session.socket.auth['threadId'] = currentThreadId || '';
     }
@@ -457,7 +475,29 @@ const useChatSession = () => {
           return;
         }
         if (!isReadOnlyView && idToResume) {
+          currentThreadIdRef.current = hydratedThread.id;
           setCurrentThreadId(hydratedThread.id);
+        }
+        const activeStep = !isReadOnlyView
+          ? findActiveGenerationStep(hydratedThread.steps)
+          : undefined;
+        if (activeStep) {
+          const status = String(activeStep.metadata?.generation_status || '');
+          const stopping =
+            generationRef.current.phase === 'stopping' &&
+            generationRef.current.assistantMessageId === activeStep.id;
+          syncGenerationState({
+            phase:
+              stopping || status === 'stopping'
+                ? 'stopping'
+                : ['pending', 'queued'].includes(status)
+                  ? 'pending'
+                  : 'streaming',
+            assistantMessageId: activeStep.id
+          });
+          trackLocalGenerationFromStep(activeStep, hydratedThread.id);
+        } else {
+          syncGenerationState(toIdleGenerationState());
         }
 
         let messages: IStep[] = [];
@@ -554,7 +594,7 @@ const useChatSession = () => {
 
       socket.on('new_message', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
-        trackLocalGenerationFromStep(message, currentThreadId);
+        trackLocalGenerationFromStep(message, currentThreadIdRef.current);
         setMessages((oldMessages) => addMessage(oldMessages, message));
       });
 
@@ -562,6 +602,7 @@ const useChatSession = () => {
         'first_interaction',
         (event: { interaction: string; thread_id: string }) => {
           setFirstUserInteraction(event.interaction);
+          currentThreadIdRef.current = event.thread_id;
           setCurrentThreadId(event.thread_id);
           const localGeneration = readLocalGenerationSnapshot();
           if (localGeneration?.assistantMessageId) {
@@ -576,7 +617,7 @@ const useChatSession = () => {
 
       socket.on('update_message', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
-        trackLocalGenerationFromStep(message, currentThreadId);
+        trackLocalGenerationFromStep(message, currentThreadIdRef.current);
         setMessages((oldMessages) => {
           const activeGeneration = generationRef.current;
           const activeAssistantMessageId = activeGeneration.assistantMessageId;
@@ -613,7 +654,7 @@ const useChatSession = () => {
 
       socket.on('stream_start', (message: IStep) => {
         applyQuotaFromStep(message, setThreadQuota, setUserQuota);
-        trackLocalGenerationFromStep(message, currentThreadId);
+        trackLocalGenerationFromStep(message, currentThreadIdRef.current);
         const activeGeneration = generationRef.current;
         if (
           activeGeneration.phase === 'stopping' &&
@@ -838,7 +879,6 @@ const useChatSession = () => {
     [
       chatProfile,
       client,
-      currentThreadId,
       idToResume,
       sessionId,
       setGeneration,

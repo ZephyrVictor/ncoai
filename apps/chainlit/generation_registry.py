@@ -13,6 +13,9 @@ class ActiveGeneration:
     generation_status: str
     updated_at: float
     last_snapshot_at: float
+    user_identifier: str | None = None
+    task: asyncio.Task | None = None
+    cancellation_requested: bool = False
 
 
 class GenerationRegistry:
@@ -27,6 +30,8 @@ class GenerationRegistry:
         assistant_message_id: str,
         partial_output: str = "",
         generation_status: str = "pending",
+        user_identifier: str | None = None,
+        task: asyncio.Task | None = None,
     ) -> None:
         now = time()
         async with self._lock:
@@ -37,7 +42,26 @@ class GenerationRegistry:
                 generation_status=generation_status,
                 updated_at=now,
                 last_snapshot_at=0.0,
+                user_identifier=user_identifier,
+                task=task,
             )
+
+    async def cancel_for_user(
+        self, thread_id: str, user_identifier: str
+    ) -> asyncio.Task | None:
+        """Cancel an owned generation after its original socket is replaced."""
+        async with self._lock:
+            entry = self._entries.get(thread_id)
+            if not entry or not user_identifier or entry.user_identifier != user_identifier:
+                return None
+            task = entry.task
+            if not task or task.done() or task is asyncio.current_task():
+                return None
+            # A second cancel can interrupt quota settlement and resource cleanup.
+            if not entry.cancellation_requested and not task.cancelling():
+                task.cancel()
+            self._entries[thread_id] = replace(entry, cancellation_requested=True)
+            return task
 
     async def append_token(
         self,

@@ -531,6 +531,7 @@ def quota_message_metadata(
             "session_limit_tokens": thread_summary.get("limit_tokens", 0),
             "user_used_tokens": user_summary.get("used_tokens", 0),
             "user_limit_tokens": user_summary.get("limit_tokens", 0),
+            "user_policy_version": user_summary.get("policy_version", 0),
             "updated_at": updated_at,
         },
     }
@@ -1423,6 +1424,18 @@ async def on_chat_resume(thread: ThreadDict) -> None:
     cl.user_session.set("last_request_id", metadata.get("last_request_id"))
 
 
+@cl.on_stop
+async def on_stop() -> None:
+    task = await GENERATION_REGISTRY.cancel_for_user(
+        context.session.thread_id, current_user_identifier()
+    )
+    if task is not None:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     del message
@@ -1466,6 +1479,8 @@ async def on_message(message: cl.Message) -> None:
             assistant_message_id=assistant_message.id,
             partial_output="",
             generation_status="pending",
+            user_identifier=user_identifier,
+            task=asyncio.current_task(),
         )
 
         client = build_client()

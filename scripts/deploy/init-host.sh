@@ -127,7 +127,7 @@ if [[ "$BUILD_CHAINLIT_FRONTEND" == "0" ]]; then
     exit 1
   fi
   echo "[INFO] Skipping Chainlit frontend build because BUILD_CHAINLIT_FRONTEND=0"
-elif [[ -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" ]]; then
+elif [[ "$BUILD_CHAINLIT_FRONTEND" == "auto" && -d "$FRONTEND_DIST_DIR" && -d "$COPILOT_DIST_DIR" ]]; then
   echo "[INFO] Chainlit frontend assets are ready"
 else
   if [[ -x "$NODE_DIR/bin/node" ]]; then

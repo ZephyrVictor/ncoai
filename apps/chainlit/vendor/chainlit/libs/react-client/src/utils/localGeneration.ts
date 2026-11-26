@@ -167,6 +167,11 @@ const withLocalRecovery = (
   step: IStep,
   snapshot: ILocalGenerationSnapshot
 ): IStep => {
+  const status = String(step.metadata?.generation_status || '');
+  if (!step.streaming && (!status || isTerminalStatus(status))) {
+    clearLocalGenerationSnapshot(step.id);
+    return { ...step, metadata: stripLocalResyncingMetadata(step.metadata) };
+  }
   const nextMetadata = {
     ...(step.metadata || {}),
     generation_status: snapshot.generationStatus,

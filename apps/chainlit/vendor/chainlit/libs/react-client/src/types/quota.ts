@@ -19,5 +19,6 @@ export interface ITokenUsageMetadata {
   session_limit_tokens: number;
   user_used_tokens: number;
   user_limit_tokens: number;
+  user_policy_version?: number;
   updated_at?: string;
 }
