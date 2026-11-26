@@ -1,7 +1,7 @@
 upstream vllm_lb_pool {
   least_conn;
 ${VLLM_LB_UPSTREAM_SERVERS}
-  keepalive 128;
+  keepalive 256;
   keepalive_requests 10000;
   keepalive_timeout 300s;
 }
