@@ -1,4 +1,6 @@
-events {}
+events {
+  worker_connections 4096;
+}
 
 http {
   map $http_cookie $chainlit_sticky_key {
@@ -196,4 +198,6 @@ ${CHAINLIT_UPSTREAM_SERVERS}
       proxy_read_timeout 3600s;
     }
   }
+
+  include /etc/nginx/conf.d/*.conf;
 }

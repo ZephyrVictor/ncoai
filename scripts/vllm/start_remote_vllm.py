@@ -36,6 +36,9 @@ class LauncherConfig:
     enable_fp8_kv: bool
     language_model_only: bool
     enforce_eager: bool
+    disable_custom_all_reduce: bool = False
+    api_key: str = ""
+    reasoning_parser: str = ""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-language-model-only", action="store_false", dest="language_model_only")
     parser.add_argument("--enforce-eager", action="store_true", default=env_flag("ENFORCE_EAGER", False))
     parser.add_argument("--disable-enforce-eager", action="store_false", dest="enforce_eager")
+    parser.add_argument("--disable-custom-all-reduce", action="store_true", default=env_flag("DISABLE_CUSTOM_ALL_REDUCE", False))
+    parser.add_argument("--enable-custom-all-reduce", action="store_false", dest="disable_custom_all_reduce")
+    parser.add_argument("--api-key", default=os.getenv("VLLM_API_KEY", "").strip())
+    parser.add_argument("--reasoning-parser", default=os.getenv("VLLM_REASONING_PARSER", "").strip())
     parser.add_argument("--dry-run", action="store_true", help="Print the resolved command and exit.")
     return parser
 
@@ -84,6 +91,9 @@ def config_from_args(args: argparse.Namespace) -> LauncherConfig:
         enable_fp8_kv=bool(args.enable_fp8_kv),
         language_model_only=bool(args.language_model_only),
         enforce_eager=bool(args.enforce_eager),
+        disable_custom_all_reduce=bool(args.disable_custom_all_reduce),
+        api_key=str(args.api_key or "").strip(),
+        reasoning_parser=str(args.reasoning_parser or "").strip(),
     )
 
 
@@ -121,6 +131,12 @@ def build_command(config: LauncherConfig) -> list[str]:
         command.append("--language-model-only")
     if config.enforce_eager:
         command.append("--enforce-eager")
+    if config.disable_custom_all_reduce:
+        command.append("--disable-custom-all-reduce")
+    if config.reasoning_parser:
+        command.extend(["--reasoning-parser", config.reasoning_parser])
+    if config.api_key and config.api_key != "dummy":
+        command.extend(["--api-key", config.api_key])
     return command
 
 

@@ -42,6 +42,9 @@ ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 ENABLE_FP8_KV="${ENABLE_FP8_KV:-0}"
 LANGUAGE_MODEL_ONLY="${LANGUAGE_MODEL_ONLY:-0}"
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+DISABLE_CUSTOM_ALL_REDUCE="${DISABLE_CUSTOM_ALL_REDUCE:-0}"
+VLLM_API_KEY="${VLLM_API_KEY:-}"
+VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-}"
 
 if [[ ! -d "$MODEL_PATH" ]]; then
   echo "[ERROR] MODEL_PATH does not exist: $MODEL_PATH" >&2
@@ -90,6 +93,18 @@ fi
 
 if [[ "$ENFORCE_EAGER" == "1" ]]; then
   ARGS+=(--enforce-eager)
+fi
+
+if [[ "$DISABLE_CUSTOM_ALL_REDUCE" == "1" ]]; then
+  ARGS+=(--disable-custom-all-reduce)
+fi
+
+if [[ -n "$VLLM_REASONING_PARSER" ]]; then
+  ARGS+=(--reasoning-parser "$VLLM_REASONING_PARSER")
+fi
+
+if [[ -n "$VLLM_API_KEY" && "$VLLM_API_KEY" != "dummy" ]]; then
+  ARGS+=(--api-key "$VLLM_API_KEY")
 fi
 
 echo "[INFO] Starting vLLM OpenAI-compatible server"

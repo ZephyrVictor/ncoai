@@ -86,6 +86,9 @@ services:
       CHAINLIT_WORKER_COUNT: ${CHAINLIT_WORKER_COUNT:-4}
       CHAINLIT_WORKER_BASE_PORT: ${CHAINLIT_WORKER_BASE_PORT:-3100}
       ADMIN_APP_PORT: ${ADMIN_APP_PORT:-3200}
+      VLLM_LB_ENABLED: ${VLLM_LB_ENABLED:-0}
+      VLLM_LB_PORT: ${VLLM_LB_PORT:-12230}
+      VLLM_LB_UPSTREAM_ORIGINS: ${VLLM_LB_UPSTREAM_ORIGINS:-}
     volumes:
       - ../nginx/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
       - ../nginx/nginx.public-http.conf.template:/etc/nginx/templates/nginx.public-http.conf.template:ro
@@ -139,6 +142,68 @@ services:
           envsubst '$$NGINX_PORT $$CHAINLIT_PORT $$CHAINLIT_UPSTREAM_SERVERS $$ADMIN_APP_PORT $$GRAFANA_PORT' \
             < /etc/nginx/templates/nginx.conf.template \
             > /etc/nginx/nginx.conf
+        fi
+        rm -f /etc/nginx/conf.d/vllm-lb.conf
+        if [ "${VLLM_LB_ENABLED:-0}" = "1" ] && [ -n "${VLLM_LB_UPSTREAM_ORIGINS:-}" ]; then
+          mkdir -p /etc/nginx/conf.d
+          vllm_servers=""
+          OLD_IFS="$$IFS"
+          IFS=','
+          for raw in ${VLLM_LB_UPSTREAM_ORIGINS}; do
+            trimmed="$$(printf '%s' "$$raw" | sed 's|^http://||; s|^https://||; s|/v1$$||; s|/$$||; s|^[[:space:]]*||; s|[[:space:]]*$$||')"
+            if [ -n "$$trimmed" ]; then
+              vllm_servers="$${vllm_servers}  server $${trimmed} max_fails=3 fail_timeout=10s;\n"
+            fi
+          done
+          IFS="$$OLD_IFS"
+          cat > /etc/nginx/conf.d/vllm-lb.conf <<EOF
+upstream vllm_lb_pool {
+  least_conn;
+$$(printf '%b' "$$vllm_servers")  keepalive 128;
+  keepalive_requests 10000;
+  keepalive_timeout 300s;
+}
+
+server {
+  listen 127.0.0.1:${VLLM_LB_PORT:-12230};
+  server_name _;
+
+  location = /healthz {
+    return 200 "ok\n";
+  }
+
+  location = /stub_status {
+    stub_status;
+  }
+
+  location = /health {
+    proxy_pass http://vllm_lb_pool/health;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 10s;
+  }
+
+  location /v1/ {
+    proxy_pass http://vllm_lb_pool;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host \$host;
+    proxy_set_header Authorization \$http_authorization;
+    proxy_set_header Content-Type \$http_content_type;
+    proxy_set_header Accept \$http_accept;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_request_buffering off;
+    chunked_transfer_encoding on;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_next_upstream error timeout invalid_header http_502 http_503;
+    proxy_next_upstream_tries 4;
+  }
+}
+EOF
         fi
         exec nginx -g 'daemon off;'
     logging:

@@ -1436,6 +1436,44 @@ async def on_stop() -> None:
             pass
 
 
+
+def format_user_facing_upstream_error(exc: Exception, *, quota_charged: bool = False) -> str:
+    """Translate raw OpenAI/LiteLLM/httpx exceptions into concise Chinese messages."""
+    name = type(exc).__name__.lower()
+    raw = str(exc).lower()
+    suffix = "请稍后重试。" if quota_charged else "本次未消耗配额，请稍后重试。"
+    if "timeout" in name or "timed out" in raw or "504" in raw:
+        return f"模型响应超时，{suffix}"
+    if "ratelimit" in name or "429" in raw or "too many requests" in raw:
+        return f"当前请求高峰，{suffix}"
+    if (
+        "connection" in name
+        or "connect" in raw
+        or "502" in raw
+        or "503" in raw
+        or "service unavailable" in raw
+    ):
+        return f"模型服务临时波动，系统正在自动切换节点，{suffix}"
+    if "context_length" in raw or "maximum context length" in raw or "max_model_len" in raw:
+        return f"当前对话上下文已超出单轮长度限制，请新建对话继续。{'' if quota_charged else '本次未消耗配额。'}"
+    return f"模型服务暂时不可用，{suffix}"
+
+
+def extract_reasoning_token(delta: Any) -> str:
+    """Extract optional reasoning/thinking delta emitted by Qwen3/Qwen3.8 reasoning parsers."""
+    for attr in ("reasoning_content", "reasoning"):
+        value = getattr(delta, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    model_extra = getattr(delta, "model_extra", None)
+    if isinstance(model_extra, Mapping):
+        for key in ("reasoning_content", "reasoning"):
+            value = model_extra.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     del message
@@ -1453,6 +1491,7 @@ async def on_message(message: cl.Message) -> None:
     stream_delivery_failed = False
     client: AsyncOpenAI | None = None
     stream = None
+    thinking_step = None
     assistant_placeholder_sent = False
     global_admission_lease: AdmissionLease | None = None
     litellm_slot_acquired = False
@@ -1547,6 +1586,7 @@ async def on_message(message: cl.Message) -> None:
             },
         )
 
+        thinking_step = None
         async for part in stream:
             if not provider_request_id and getattr(part, "id", None):
                 provider_request_id = part.id
@@ -1557,8 +1597,25 @@ async def on_message(message: cl.Message) -> None:
             if not part.choices:
                 continue
 
-            token = part.choices[0].delta.content or ""
+            delta = part.choices[0].delta
+            reasoning_token = extract_reasoning_token(delta)
+            if reasoning_token and SETTINGS.models.enable_thinking:
+                try:
+                    if thinking_step is None:
+                        thinking_step = cl.Step(name="思考过程", type="llm")
+                        await thinking_step.__aenter__()
+                    await thinking_step.stream_token(reasoning_token)
+                except Exception as exc:  # pragma: no cover - operational path
+                    LOGGER.debug("Reasoning step delivery failed: %s", exc)
+
+            token = delta.content or ""
             if token:
+                if thinking_step is not None:
+                    try:
+                        await thinking_step.__aexit__(None, None, None)
+                    except Exception:  # pragma: no cover - operational path
+                        pass
+                    thinking_step = None
                 assistant_message.metadata = clear_generation_status(
                     assistant_message.metadata
                 )
@@ -1584,6 +1641,13 @@ async def on_message(message: cl.Message) -> None:
                     interval_seconds=snapshot_interval_seconds,
                 ):
                     await persist_message_snapshot(assistant_message)
+
+        if thinking_step is not None:
+            try:
+                await thinking_step.__aexit__(None, None, None)
+            except Exception:  # pragma: no cover - operational path
+                pass
+            thinking_step = None
 
         settlement = await QUOTA_SERVICE.settle(
             reservation=reservation,
@@ -1709,10 +1773,12 @@ async def on_message(message: cl.Message) -> None:
             "litellm",
             classify_exception_result(exc),
         )
-        error_message = f"Chat request failed: {exc}"
-        if reservation and (
-            provider_request_id or assistant_message.content or usage is not None
-        ):
+        has_visible_output = bool((assistant_message.content or "").strip())
+        error_message = format_user_facing_upstream_error(
+            exc,
+            quota_charged=bool(reservation and has_visible_output),
+        )
+        if reservation and has_visible_output:
             settlement = await QUOTA_SERVICE.settle(
                 reservation=reservation,
                 provider_request_id=provider_request_id,
@@ -1762,6 +1828,12 @@ async def on_message(message: cl.Message) -> None:
             else:
                 await cl.Message(content=error_message).send()
     finally:
+        if thinking_step is not None:
+            try:
+                await thinking_step.__aexit__(None, None, None)
+            except Exception:  # pragma: no cover - operational path
+                pass
+            thinking_step = None
         await close_async_resource(stream, label="LLM stream")
         if litellm_slot_acquired:
             LITELLM_REQUEST_SEMAPHORE.release()

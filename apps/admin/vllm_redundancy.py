@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,10 +49,12 @@ async def default_probe_func(
     endpoint: VLLMEndpoint,
     timeout_seconds: float,
 ) -> dict[str, Any]:
+    api_key = os.getenv("VLLM_API_KEY", "").strip() or None
     return await asyncio.to_thread(
         probe_vllm_endpoint,
         endpoint,
         timeout_seconds=timeout_seconds,
+        api_key=api_key,
     )
 
 
@@ -172,6 +175,12 @@ class VLLMRedundancyController:
             "VLLM_BACKUP_REQUEST_TIMEOUT_SECONDS": str(
                 self.settings.vllm_backup_request_timeout_seconds
             ),
+            "VLLM_API_KEY": os.getenv("VLLM_API_KEY", ""),
+            "VLLM_REPLICA_GPU_GROUPS": os.getenv("VLLM_REPLICA_GPU_GROUPS", ""),
+            "VLLM_REMOTE_ORIGINS": os.getenv("VLLM_REMOTE_ORIGINS", ""),
+            "VLLM_LB_ENABLED": os.getenv("VLLM_LB_ENABLED", "0"),
+            "VLLM_LB_PORT": os.getenv("VLLM_LB_PORT", "12230"),
+            "VLLM_LB_ORIGIN": os.getenv("VLLM_LB_ORIGIN", ""),
         }
 
     def _load_config(self) -> tuple[LiteLLMFailoverSettings | None, str | None]:

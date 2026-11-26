@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from ncoai_shared.vllm_replicas import replica_environments
+from ncoai_shared.vllm_replicas import remote_replica_origins, replica_environments
 
 
 def utcnow() -> datetime:
@@ -55,6 +55,10 @@ class LiteLLMFailoverSettings:
     primary_request_timeout_seconds: float
     backup_request_timeout_seconds: float
     replica_endpoints: tuple[VLLMEndpoint, ...] = ()
+    remote_endpoints: tuple[VLLMEndpoint, ...] = ()
+    lb_endpoint: VLLMEndpoint | None = None
+    api_key: str = "dummy"
+    force_disable_thinking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,8 @@ class PreparedLiteLLMConfig:
 
 def build_local_origin(host: str, port: str | int) -> str:
     resolved_host = str(host or "").strip() or "127.0.0.1"
+    if resolved_host == "0.0.0.0":
+        resolved_host = "127.0.0.1"
     resolved_port = str(port or "").strip() or "12233"
     return normalize_origin(f"http://{resolved_host}:{resolved_port}")
 
@@ -112,18 +118,29 @@ def build_litellm_failover_settings(
     served_model_name = str(values.get("SERVED_MODEL_NAME") or "qwen35b").strip()
     if not served_model_name:
         served_model_name = "qwen35b"
-
-    default_alias = str(values.get("CHAINLIT_DEFAULT_MODEL") or "qwen35b_no_think").strip()
-    thinking_alias = str(values.get("CHAINLIT_THINKING_MODEL") or "qwen35b_think").strip()
-    thinking_enabled = parse_env_bool(values.get("CHAINLIT_ENABLE_THINKING"), default=True)
-    if thinking_enabled and default_alias == thinking_alias:
-        raise ValueError("CHAINLIT_DEFAULT_MODEL and CHAINLIT_THINKING_MODEL must differ")
+    default_model_alias = (
+        str(values.get("CHAINLIT_DEFAULT_MODEL") or "qwen35b_no_think").strip()
+        or "qwen35b_no_think"
+    )
+    thinking_model_alias = (
+        str(values.get("CHAINLIT_THINKING_MODEL") or "qwen35b_think").strip()
+        or "qwen35b_think"
+    )
+    thinking_enabled = parse_env_bool(
+        values.get("CHAINLIT_ENABLE_THINKING"),
+        default=True,
+    )
+    lb_origin = str(values.get("VLLM_LB_ORIGIN") or "").strip()
+    if not lb_origin and parse_env_bool(values.get("VLLM_LB_ENABLED"), default=False):
+        lb_port = str(values.get("VLLM_LB_PORT") or "12230").strip() or "12230"
+        lb_origin = f"http://127.0.0.1:{lb_port}"
+    api_key = str(values.get("VLLM_API_KEY") or "").strip() or "dummy"
 
     return LiteLLMFailoverSettings(
         enabled=enabled,
         served_model_name=served_model_name,
-        default_model_alias=default_alias,
-        thinking_model_alias=thinking_alias,
+        default_model_alias=default_model_alias,
+        thinking_model_alias=thinking_model_alias,
         thinking_enabled=thinking_enabled,
         primary_endpoint=build_vllm_endpoint(
             build_local_origin(
@@ -131,7 +148,9 @@ def build_litellm_failover_settings(
                 values.get("VLLM_PORT", "12233"),
             )
         ),
-        backup_endpoint=build_vllm_endpoint(backup_origin) if enabled else None,
+        backup_endpoint=(
+            build_vllm_endpoint(backup_origin) if enabled and backup_origin else None
+        ),
         primary_request_timeout_seconds=parse_env_float(
             values.get("VLLM_PRIMARY_REQUEST_TIMEOUT_SECONDS"),
             default=180.0,
@@ -141,20 +160,38 @@ def build_litellm_failover_settings(
             default=180.0,
         ),
         replica_endpoints=tuple(
-            build_vllm_endpoint(build_local_origin(replica.get("VLLM_HOST", "127.0.0.1"),
-                                                  replica.get("VLLM_PORT", "12233")))
+            build_vllm_endpoint(
+                build_local_origin(
+                    replica.get("VLLM_HOST", "127.0.0.1"),
+                    replica.get("VLLM_PORT", "12233"),
+                )
+            )
             for replica in replica_environments(values)[1:]
         ),
+        remote_endpoints=tuple(
+            build_vllm_endpoint(origin) for origin in remote_replica_origins(values)
+        ),
+        lb_endpoint=build_vllm_endpoint(lb_origin) if lb_origin else None,
+        api_key=api_key,
+        force_disable_thinking=parse_env_bool(values.get("VLLM_FORCE_DISABLE_THINKING"), default=False),
     )
 
 
-def _request_json(url: str, *, timeout_seconds: float) -> dict[str, Any]:
-    request = Request(url, headers={"Accept": "application/json"})
+def _request_json(
+    url: str,
+    *,
+    timeout_seconds: float,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    headers = {"Accept": "application/json"}
+    if api_key and api_key != "dummy":
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
-            body = response.read().decode("utf-8")
+            body = response.read().decode("utf-8", errors="ignore")
             return {
-                "status": int(response.status),
+                "status": getattr(response, "status", 200),
                 "body": body,
             }
     except HTTPError as exc:
@@ -168,6 +205,7 @@ def probe_vllm_endpoint(
     endpoint: VLLMEndpoint,
     *,
     timeout_seconds: float = 3.0,
+    api_key: str | None = None,
 ) -> dict[str, Any]:
     checked_at = utcnow()
     health_ok = False
@@ -175,7 +213,11 @@ def probe_vllm_endpoint(
     errors: list[str] = []
 
     try:
-        response = _request_json(endpoint.health_url, timeout_seconds=timeout_seconds)
+        response = _request_json(
+            endpoint.health_url,
+            timeout_seconds=timeout_seconds,
+            api_key=api_key,
+        )
         health_ok = 200 <= int(response["status"]) < 300
         if not health_ok:
             errors.append(f"health check returned {response['status']}")
@@ -183,7 +225,11 @@ def probe_vllm_endpoint(
         errors.append(f"health check failed: {exc}")
 
     try:
-        response = _request_json(endpoint.models_url, timeout_seconds=timeout_seconds)
+        response = _request_json(
+            endpoint.models_url,
+            timeout_seconds=timeout_seconds,
+            api_key=api_key,
+        )
         models_ok = 200 <= int(response["status"]) < 300
         if not models_ok:
             errors.append(f"models check returned {response['status']}")
@@ -224,7 +270,7 @@ def _model_block(
             "    litellm_params:\n"
             f"      model: {json.dumps('openai/' + settings.served_model_name)}\n"
             f"      api_base: {json.dumps(api_base)}\n"
-            "      api_key: dummy\n"
+            f"      api_key: {json.dumps(settings.api_key)}\n"
             f"      request_timeout: {format_timeout(timeout_seconds)}\n"
         )
         if enable_thinking is not None:
@@ -235,9 +281,12 @@ def _model_block(
             )
         return block
 
+    default_enable_thinking: bool | None = (
+        False if (settings.thinking_enabled or settings.force_disable_thinking) else None
+    )
     block = deployment(
         settings.default_model_alias,
-        False if settings.thinking_enabled else None,
+        default_enable_thinking,
     )
     if settings.thinking_enabled:
         block += deployment(settings.thinking_model_alias, True)
@@ -277,16 +326,32 @@ def build_litellm_template_context(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     values = dict(env or {})
-    return {
-        "primary_model_block": "".join(_model_block(
-            settings,
-            api_base=endpoint.api_base,
-            timeout_seconds=settings.primary_request_timeout_seconds,
-        ) for endpoint in (settings.primary_endpoint, *settings.replica_endpoints)),
-        "router_settings_block": (
+    if settings.lb_endpoint is not None:
+        # Delegate multi-replica least_conn routing to the dedicated Nginx LB gateway.
+        primary_endpoints = (settings.lb_endpoint,)
+        router_settings_block = ""
+    else:
+        primary_endpoints = (
+            settings.primary_endpoint,
+            *settings.replica_endpoints,
+            *settings.remote_endpoints,
+        )
+        router_settings_block = (
             "router_settings:\n  routing_strategy: least-busy\n"
-            if settings.replica_endpoints else ""
+            if len(primary_endpoints) > 1
+            else ""
+        )
+
+    return {
+        "primary_model_block": "".join(
+            _model_block(
+                settings,
+                api_base=endpoint.api_base,
+                timeout_seconds=settings.primary_request_timeout_seconds,
+            )
+            for endpoint in primary_endpoints
         ),
+        "router_settings_block": router_settings_block,
         "litellm_set_verbose": format_yaml_bool(
             parse_env_bool(values.get("LITELLM_SET_VERBOSE"), default=False)
         ),
@@ -315,19 +380,30 @@ def prepare_litellm_config(
     settings = build_litellm_failover_settings(env)
     warnings: list[str] = []
     backup_probe: dict[str, Any] | None = None
-    if settings.backup_endpoint is not None:
-        backup_probe = probe_vllm_endpoint(
-            settings.backup_endpoint,
-            timeout_seconds=probe_timeout_seconds,
-        )
+
+    if settings.enabled and settings.backup_endpoint is not None:
+        if settings.api_key and settings.api_key != "dummy":
+            backup_probe = probe_vllm_endpoint(
+                settings.backup_endpoint,
+                timeout_seconds=probe_timeout_seconds,
+                api_key=settings.api_key,
+            )
+        else:
+            backup_probe = probe_vllm_endpoint(
+                settings.backup_endpoint,
+                timeout_seconds=probe_timeout_seconds,
+            )
         if not backup_probe["healthy"]:
             warnings.append(
-                "Backup vLLM endpoint is currently unreachable: "
-                f"{backup_probe['origin']} ({backup_probe['error'] or 'probe failed'})"
+                "Backup vLLM endpoint "
+                f"{settings.backup_endpoint.origin} is currently unreachable: "
+                f"{backup_probe['error'] or 'unhealthy'}. "
+                "Continuing with failover configuration enabled."
             )
 
+    rendered = render_litellm_config(template_text, settings, env=env)
     return PreparedLiteLLMConfig(
-        rendered_config=render_litellm_config(template_text, settings, env=env),
+        rendered_config=rendered,
         settings=settings,
         warnings=tuple(warnings),
         backup_probe=backup_probe,

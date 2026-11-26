@@ -514,17 +514,31 @@ def wait_for_service_readiness(
     headers = {}
     if service == "litellm" and merged_env.get("LITELLM_MASTER_KEY"):
         headers["Authorization"] = f"Bearer {merged_env['LITELLM_MASTER_KEY']}"
+    elif (
+        service == "vllm"
+        and merged_env.get("VLLM_API_KEY")
+        and merged_env.get("VLLM_API_KEY") != "dummy"
+    ):
+        headers["Authorization"] = f"Bearer {merged_env['VLLM_API_KEY']}"
+    require_all_urls = service == "vllm"
     while time.time() < deadline:
+        ready_count = 0
         for url in urls:
             try:
                 request = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(request, timeout=5) as response:
                     if 200 <= response.status < 300:
-                        return True
+                        if not require_all_urls:
+                            return True
+                        ready_count += 1
+                    else:
+                        last_error = f"{url} returned {response.status}"
             except urllib.error.URLError as exc:
-                last_error = str(exc)
+                last_error = f"{url}: {exc}"
             except Exception as exc:  # pragma: no cover - operational path
-                last_error = str(exc)
+                last_error = f"{url}: {exc}"
+        if require_all_urls and ready_count == len(urls):
+            return True
         time.sleep(1.0)
 
     if last_error:
