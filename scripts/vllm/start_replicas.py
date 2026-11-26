@@ -34,6 +34,8 @@ def main() -> int:
                 [sys.executable, str(ROOT / "scripts/vllm/start_remote_vllm.py")],
                 env=env, cwd=ROOT, start_new_session=True,
             ))
+            if index + 1 < len(replicas):
+                time.sleep(2.0)
         while True:
             for index, child in enumerate(children):
                 if child.poll() is not None:

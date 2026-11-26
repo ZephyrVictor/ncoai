@@ -195,6 +195,9 @@ def main() -> int:
     validate_config(config)
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = config.cuda_visible_devices
+    # Remove HTTP port env var so vLLM does not reuse it as distributed TCPStore port
+    # and assign a deterministic non-overlapping distributed port per replica HTTP port.
+    env["VLLM_PORT"] = str(29500 + (int(config.port) % 1000) * 10)
     os.execvpe(command[0], command, env)
 
 
